@@ -6,6 +6,7 @@ using SiteKeeper.Shared.Enums;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace SiteKeeper.Master.Workflow.ActionHandlers
@@ -70,9 +71,22 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
 
             // --- 3. Log Custom Message (if provided) ---
             // This is used for testing master-side logging.
-            if (context.Parameters.TryGetValue("customMessage", out var customMessageObj) && customMessageObj is string customMessage && !string.IsNullOrEmpty(customMessage))
+            if (context.Parameters.TryGetValue("customMessage", out var customMessageObj))
             {
-                context.LogInfo($"MASTER-LOG: {customMessage}");
+                string? customMessage = null;
+                if (customMessageObj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.String)
+                {
+                    customMessage = jsonElement.GetString();
+                }
+                else if (customMessageObj is string str) 
+                {
+                    customMessage = str;
+                }
+
+                if (!string.IsNullOrEmpty(customMessage))
+                {
+                    context.LogInfo($"MASTER-LOG: {customMessage}");
+                }
             }
 
             // We create a journaled system event for this test run.

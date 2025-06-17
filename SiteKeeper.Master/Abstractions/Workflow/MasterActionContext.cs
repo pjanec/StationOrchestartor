@@ -110,6 +110,9 @@ namespace SiteKeeper.Master.Abstractions.Workflow
         /// <param name="stageInput">Optional input data for the stage, to be recorded in the journal.</param>
         public async Task BeginStageAsync(string stageName, object? stageInput = null)
         {
+            // Flush any logs from the previous stage before starting the new one.
+            await FlushLogsAsync();
+
             _currentStageName = stageName;
             // The context now calls the journal service to create the stage's record.
             await _journalService.RecordStageInitiatedAsync(this, stageName, stageInput);
@@ -133,7 +136,10 @@ namespace SiteKeeper.Master.Abstractions.Workflow
 
         public async Task CompleteStageAsync(object? stageResult = null)
         {
-            // This is a new method for cleanly marking a stage as complete in the journal.
+            // Flush any logs generated during this stage before marking it as complete.
+            await FlushLogsAsync();
+
+            // cleanly mark a stage as complete in the journal.
             await _journalService.RecordStageCompletedAsync(this, _currentStageName, stageResult);
         }
         
@@ -143,7 +149,6 @@ namespace SiteKeeper.Master.Abstractions.Workflow
         /// </summary>
         public async Task FlushLogsAsync()
         {
-            Logger.LogInformation("--- Synchronizing log stream ---");
             await _logFlushProvider();
         }
         
@@ -181,30 +186,50 @@ namespace SiteKeeper.Master.Abstractions.Workflow
         /// </summary>
         public void SetCancelled(string message)
         {
-            Logger.LogWarning(message); // Cancellation is a warning, not an error.
+            LogWarning(message); // Cancellation is a warning, not an error.
             _masterAction.OverallStatus = OperationOverallStatus.Cancelled;
             _masterAction.OverallProgressPercent = 100; // A cancelled action is still 100% "complete" in its lifecycle.
             _masterAction.EndTime = DateTime.UtcNow;
         }
 
         /// <summary>
-        /// Logs an informational message. This helper ensures the message is sent to the standard logger
-        /// (which is picked up by the UILoggingTarget) and also persisted to the journal.
+        /// Logs an informational message. This helper ensures the message is sent to the standard logger,
+        /// added to the in-memory RecentLogs queue, and persisted to the journal via the UILoggingTarget.
         /// </summary>
         public void LogInfo(string message)
         {
+            // First, send the log to the standard logging pipeline (for NLog targets)
             Logger.LogInformation(message);
+    
+            // Second, add the formatted log to the in-memory queue for API status polling
+            _masterAction.AddLogEntry($"[{DateTime.UtcNow:HH:mm:ss.fff} INFO] {message}");
         }
 
         /// <summary>
-        /// Logs an error message. This helper ensures the message is sent to the standard logger
-        /// (which is picked up by the UILoggingTarget) and also persisted to the journal.
+        /// Logs an informational message. This helper ensures the message is sent to the standard logger,
+        /// added to the in-memory RecentLogs queue, and persisted to the journal via the UILoggingTarget.
+        /// </summary>
+        public void LogWarning(string message)
+        {
+            // First, send the log to the standard logging pipeline (for NLog targets)
+            Logger.LogWarning(message);
+    
+            // Second, add the formatted log to the in-memory queue for API status polling
+            _masterAction.AddLogEntry($"[{DateTime.UtcNow:HH:mm:ss.fff} WARN] {message}");
+        }
+
+        /// <summary>
+        /// Logs an error message. This helper ensures the message is sent to the standard logger,
+        /// added to the in-memory RecentLogs queue, and persisted to the journal via the UILoggingTarget.
         /// </summary>
         public void LogError(Exception? ex, string message)
         {
+            // First, send the log to the standard logging pipeline (for NLog targets)
             Logger.LogError(ex, message);
-        }
 
+            // Second, add the formatted log to the in-memory queue for API status polling
+            _masterAction.AddLogEntry($"[{DateTime.UtcNow:HH:mm:ss.fff} ERROR] {message}");
+        }
         #endregion
     }
 } 

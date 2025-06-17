@@ -180,6 +180,16 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
                         // or for their nodes to go offline. This method has a built-in timeout.
                         await MonitorCancellationCompletion(opContext, TimeSpan.FromSeconds(15));
 
+                        // After the monitor returns, explicitly finalize the status of any tasks
+                        // that were in the 'Cancelling' state, especially if the node went offline.
+                        foreach (var task in operation.NodeTasks.Where(t => t.Status == NodeTaskStatus.Cancelling))
+                        {
+                            _logger.LogInformation("Finalizing status for task {TaskId} from 'Cancelling' to 'Cancelled' after monitor completion.", task.TaskId);
+                            task.Status = NodeTaskStatus.Cancelled;
+                            task.StatusMessage = "Task cancellation confirmed as node is offline or did not respond.";
+                            task.EndTime = DateTime.UtcNow;
+                        }
+
                         // After waiting, finalize the operation state.
                         operation.OverallStatus = OperationOverallStatus.Cancelled;
                         operation.EndTime = DateTime.UtcNow;

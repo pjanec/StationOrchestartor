@@ -247,59 +247,69 @@ namespace SiteKeeper.Master.Services
         /// Requests cancellation of the currently running Master Action and provides immediate feedback.
         /// </summary>
         /// <returns>An OperationCancelResponse indicating the outcome of the cancellation request.</returns>
-        public Task<OperationCancelResponse> RequestCancellationAsync(string masterActionId, string cancelledBy)
+        public async Task<OperationCancelResponse> RequestCancellationAsync(string masterActionId, string cancelledBy)
         {
             var action = _currentMasterAction;
 
-            // Case 1: No action is running or the ID does not match.
-            if (action == null || action.Id != masterActionId)
+            // --- Step 1: Check if the action is currently running ---
+            if (action != null && action.Id == masterActionId)
             {
-                _logger.LogWarning("Received cancellation request for non-existent or wrong Master Action ID: {MasterActionId}", masterActionId);
-                return Task.FromResult(new OperationCancelResponse
+                if (action.IsComplete)
                 {
-                    OperationId = masterActionId,
-                    Status = OperationCancellationRequestStatus.NotFound,
-                    Message = "The specified action was not found or is not currently running."
-                });
-            }
+                    _logger.LogInformation("Received cancellation request for already completed Master Action {MasterActionId}", masterActionId);
+                    return new OperationCancelResponse
+                    {
+                        OperationId = masterActionId,
+                        Status = OperationCancellationRequestStatus.AlreadyCompleted,
+                        Message = $"Action already completed with status: {action.OverallStatus}"
+                    };
+                }
 
-            // Case 2: The action has already completed.
-            if (action.IsComplete)
-            {
-                _logger.LogInformation("Received cancellation request for already completed Master Action {MasterActionId}", masterActionId);
-                return Task.FromResult(new OperationCancelResponse
+                if (_cancellationTokenSource == null || _cancellationTokenSource.IsCancellationRequested)
                 {
-                    OperationId = masterActionId,
-                    Status = OperationCancellationRequestStatus.AlreadyCompleted,
-                    Message = $"Action already completed with status: {action.OverallStatus}"
-                });
-            }
+                    _logger.LogInformation("Received redundant cancellation request for Master Action {MasterActionId}", masterActionId);
+                     return new OperationCancelResponse
+                    {
+                        OperationId = masterActionId,
+                        Status = OperationCancellationRequestStatus.CancellationPending,
+                        Message = "Action cancellation is already pending."
+                    };
+                }
 
-            // Case 3: Cancellation is already in progress.
-            if (_cancellationTokenSource == null || _cancellationTokenSource.IsCancellationRequested)
-            {
-                _logger.LogInformation("Received redundant cancellation request for Master Action {MasterActionId}", masterActionId);
-                 return Task.FromResult(new OperationCancelResponse
+                _logger.LogInformation("Cancellation requested for Master Action {MasterActionId} by {CancelledBy}", masterActionId, cancelledBy);
+                _cancellationTokenSource.Cancel();
+                action.OverallStatus = OperationOverallStatus.Cancelling;
+        
+                return new OperationCancelResponse
                 {
                     OperationId = masterActionId,
                     Status = OperationCancellationRequestStatus.CancellationPending,
-                    Message = "Action cancellation is already pending."
-                });
-                 
+                    Message = "Cancellation request accepted and is being processed."
+                };
             }
 
-            // Case 4: Successfully initiate cancellation.
-            _logger.LogInformation("Cancellation requested for Master Action {MasterActionId} by {CancelledBy}", masterActionId, cancelledBy);
-            _cancellationTokenSource.Cancel();
-            action.OverallStatus = OperationOverallStatus.Cancelling; // Update the state
-            
-            return Task.FromResult(new OperationCancelResponse
+            // --- Step 2: If not running, check the journal for a completed action ---
+            var archivedAction = await _journalService.GetArchivedMasterActionAsync(masterActionId);
+            if (archivedAction != null)
+            {
+                _logger.LogInformation("Received cancellation request for already completed (archived) Master Action {MasterActionId}", masterActionId);
+                // The action existed but is finished.
+                return new OperationCancelResponse
+                {
+                    OperationId = masterActionId,
+                    Status = OperationCancellationRequestStatus.AlreadyCompleted,
+                    Message = $"Action already completed with status: {archivedAction.OverallStatus}"
+                };
+            }
+
+            // --- Step 3: If it's not in memory AND not in the journal, it is truly not found ---
+            _logger.LogWarning("Received cancellation request for non-existent Master Action ID: {MasterActionId}", masterActionId);
+            return new OperationCancelResponse
             {
                 OperationId = masterActionId,
-                Status = OperationCancellationRequestStatus.CancellationPending,
-                Message = "Cancellation request accepted and is being processed."
-            });
+                Status = OperationCancellationRequestStatus.NotFound,
+                Message = "The specified action was not found."
+            };
         }
-
     }
 }

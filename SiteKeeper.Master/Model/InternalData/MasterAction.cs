@@ -75,9 +75,13 @@ namespace SiteKeeper.Master.Model.InternalData
         public Operation? CurrentStageOperation { get; set; }
         
         /// <summary>
-        /// A thread-safe queue to store the most recent log messages for this action.
+        /// A list to store the most recent log messages for this action.
+        /// This is public for serialization but should only be accessed via thread-safe methods.
         /// </summary>
-        private readonly ConcurrentQueue<string> _recentLogs = new();
+        public List<string> RecentLogs { get; set; } = new();
+
+
+        private readonly object _logLock = new();
 
         public MasterAction(string id, OperationType type, string? name, string? initiatedBy, IReadOnlyDictionary<string, object> parameters)
         {
@@ -88,6 +92,7 @@ namespace SiteKeeper.Master.Model.InternalData
             StartTime = DateTime.UtcNow;
             OverallStatus = OperationOverallStatus.PendingInitiation;
             Parameters = parameters;
+            RecentLogs = new List<string>();
         }
 
         /// <summary>
@@ -97,25 +102,32 @@ namespace SiteKeeper.Master.Model.InternalData
         public bool IsComplete => OverallStatus.IsCompleted();
 
         /// <summary>
-        /// Adds a log message to the recent logs queue, maintaining a fixed size of 1000 entries
-        /// to prevent excessive memory usage.
+        /// Adds a log message to the RecentLogs list in a thread-safe manner.
         /// </summary>
         public void AddLogEntry(string message)
         {
-            _recentLogs.Enqueue(message);
-            // Keep the log buffer from growing indefinitely.
-            while (_recentLogs.Count > 1000)
+            lock (_logLock)
             {
-                _recentLogs.TryDequeue(out _);
+                RecentLogs.Add(message);
+                while (RecentLogs.Count > 1000)
+                {
+                    RecentLogs.RemoveAt(0);
+                }
             }
         }
 
         /// <summary>
-        /// Retrieves a snapshot of the most recent log messages.
+        /// Gets a thread-safe snapshot (a copy) of the recent logs.
         /// </summary>
+        /// <returns>A new list containing the recent log messages.</returns>
         public List<string> GetRecentLogs()
         {
-            return _recentLogs.ToList();
+            lock (_logLock)
+            {
+                // Return a copy of the list so the original can be modified
+                // while the caller is iterating over the snapshot.
+                return new List<string>(RecentLogs);
+            }
         }
     }
 } 
