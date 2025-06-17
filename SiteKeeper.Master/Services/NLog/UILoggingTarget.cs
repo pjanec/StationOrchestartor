@@ -20,7 +20,7 @@ namespace SiteKeeper.Master.Services.NLog2
     /// in their Mapped Diagnostics Logical Context (MDLC), ensuring that only logs related to an active workflow are sent to the UI.
     /// </summary>
     [Target("UILoggingTarget")]
-    public sealed class UILoggingTarget : Target
+    public sealed class UILoggingTarget : TargetWithContext
     {
         private readonly IServiceProvider _serviceProvider;
         
@@ -50,7 +50,18 @@ namespace SiteKeeper.Master.Services.NLog2
         /// Its only job is to synchronously add the log message to the in-memory queue and return immediately.
         /// This is the "producer" part of the pattern and it does not block the application thread.
         /// </summary>
-        protected override void Write(LogEventInfo logEvent) => _logQueue.Writer.TryWrite(logEvent);
+        protected override void Write(LogEventInfo logEvent)
+        {
+            var props = GetAllProperties( logEvent ); // get mdlc properties for this log event
+
+			// save all to logEvent.Properties
+			foreach( var prop in props )
+			{
+				logEvent.Properties[prop.Key] = prop.Value;
+			}
+			
+			_logQueue.Writer.TryWrite(logEvent);
+        }
 
         /// <summary>
         /// Provides a mechanism for the workflow engine to wait until all currently buffered logs have been sent.

@@ -210,8 +210,14 @@ namespace SiteKeeper.Slave.Services
             // The MDLC context (OpId, TaskId, NodeName) set by SlaveAgentService should flow into this Task.Run.
             taskContext.ExecutionTask = Task.Run(async () =>
             {
+                // Set the MDLC context here, so it applies to the lifetime of this background task.
+                NLog.MappedDiagnosticsLogicalContext.Set("SK-OperationId", instruction.OperationId);
+                NLog.MappedDiagnosticsLogicalContext.Set("SK-TaskId", instruction.TaskId);
+
                 // Get a logger instance here; it should pick up MDLC from the current async context if set by caller
-                NLog.ILogger taskSpecificNLogLogger = LogManager.GetLogger($"{SiteKeeperMasterBoundTarget.ExecutiveLogPrefix}.{instruction.TaskType}.{instruction.TaskId}");
+                string loggerName = $"{SiteKeeperMasterBoundTarget.ExecutiveLogPrefix}.{instruction.TaskType}";
+                NLog.ILogger taskSpecificNLogLogger = LogManager.GetLogger(loggerName);
+
                 bool success = false;
                 string finalMessage = "Task execution completed.";
 
@@ -236,7 +242,9 @@ namespace SiteKeeper.Slave.Services
                             if (taskContext.ShouldSendProgressUpdate(progress)) 
                             {
                                 _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                                    OperationId = instruction.OperationId, TaskId = instruction.TaskId, NodeName = _agentName,
+                                    OperationId = instruction.OperationId,
+                                    TaskId = instruction.TaskId,
+                                    NodeName = _agentName,
                                     Status = NodeTaskStatus.InProgress.ToString(), Message = $"Task progress {progress}%",
                                     ProgressPercent = progress, TimestampUtc = DateTime.UtcNow
                                 }).ContinueWith(t => { if (t.IsFaulted) _logger.Error(t.Exception, "Error sending progress update."); }, TaskContinuationOptions.OnlyOnFaulted);
@@ -272,7 +280,9 @@ namespace SiteKeeper.Slave.Services
                 {
                     taskContext.LastStatusUpdateUtc = DateTime.UtcNow;
                     await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                        OperationId = instruction.OperationId, TaskId = instruction.TaskId, NodeName = _agentName,
+                        OperationId = instruction.OperationId,
+                        TaskId = instruction.TaskId,
+                        NodeName = _agentName,
                         Status = MapSlaveLocalStatusToNodeTaskStatus(taskContext.CurrentLocalStatus).ToString(),
                         Message = finalMessage,
                         ProgressPercent = (taskContext.CurrentLocalStatus >= SlaveLocalTaskExecutionStatus.Succeeded) ? 100 : taskContext.CurrentProgressPercent,
@@ -283,6 +293,10 @@ namespace SiteKeeper.Slave.Services
                     activeSlaveTasks.TryRemove(instruction.TaskId, out _);
                     concurrentTaskSemaphore.Release();
                     taskSpecificNLogLogger.Info($"Task {instruction.TaskId} (Op: {instruction.OperationId}) finished with status {taskContext.CurrentLocalStatus}. Semaphore released. Active tasks: {activeSlaveTasks.Count}");
+
+                    // Clear the MDLC context at the very end of the task's lifecycle.
+                    NLog.MappedDiagnosticsLogicalContext.Remove("SK-OperationId");
+                    NLog.MappedDiagnosticsLogicalContext.Remove("SK-TaskId");
                 }
             }, taskContext.CancellationTokenSource.Token);
         }

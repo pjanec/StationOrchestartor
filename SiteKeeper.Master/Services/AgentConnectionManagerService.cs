@@ -184,12 +184,19 @@ namespace SiteKeeper.Master.Services
         /// <param name="payload">The data to send.</param>
         private async Task SendToAgentAsync<T>(string nodeName, Func<IAgentHub, T, Task> hubAction, T payload)
         {
+            _logger.LogDebug("Attempting to send message of type {PayloadType} to agent '{NodeName}'.", typeof(T).Name, nodeName);
+
             if (_connectedAgents.TryGetValue(nodeName, out var agentInfo))
             {
+                _logger.LogDebug("Found connected agent '{NodeName}' with ConnectionId '{ConnectionId}'. Sending message.", 
+                    nodeName, agentInfo.SignalRConnectionId);
+
                 try
                 {
                     var clientProxy = _hubContext.Clients.Client(agentInfo.SignalRConnectionId);
                     await hubAction(clientProxy, payload);
+
+                    _logger.LogInformation("Successfully sent message of type {PayloadType} to agent '{NodeName}'.", typeof(T).Name, nodeName);
                 }
                 catch (Exception ex)
                 {

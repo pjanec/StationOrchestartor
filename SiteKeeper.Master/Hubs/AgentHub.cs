@@ -138,14 +138,17 @@ namespace SiteKeeper.Master.Hubs
         /// <param name="logEntry">The log entry DTO from the slave.</param>
         public async Task ReportSlaveTaskLogAsync(SlaveTaskLogEntry logEntry)
         {
+            _logger.LogInformation("HUB-ENTRY: ReportSlaveTaskLogAsync received from slave. OpId: {OpId}, TaskId: {TaskId}, Node: {Node}, Message: '{Message}'", 
+                logEntry.OperationId, logEntry.TaskId, logEntry.NodeName, logEntry.LogMessage);
+
             if (logEntry == null || string.IsNullOrEmpty(logEntry.OperationId))
             {
                 _logger.LogWarning("Received an invalid or empty log entry from a slave on connection {ConnectionId}.", Context.ConnectionId);
                 return;
             }
 
-			    // The journal service is designed to find the active journal by OperationId and append the log.
-            await _journalService.AppendToStageLogAsync(logEntry.OperationId, logEntry);
+            // The multinodestagehandler is now responsible for calling the journal service and tracking the task.
+            await _multiNodeStageHandler.JournalSlaveLogAsync(logEntry);
         }
 
         #endregion

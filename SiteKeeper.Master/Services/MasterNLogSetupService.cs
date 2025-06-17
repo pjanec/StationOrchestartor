@@ -2,6 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NLog;
 using NLog.Config;
+using NLog.Targets;
 using SiteKeeper.Master.Services.NLog2;
 using System;
 using System.Threading;
@@ -40,6 +41,14 @@ namespace SiteKeeper.Master.Services
                 _logger.LogInformation("Programmatically adding 'UILoggingTarget' as 'ui-forwarder'.");
 
                 _uiLoggingTarget = new UILoggingTarget(_serviceProvider) { Name = "ui-forwarder" };
+
+                // setup MLDC captured properties
+                _uiLoggingTarget.ContextProperties.Add(new TargetPropertyWithContext
+                {
+                    Name = "MasterActionId",
+                    Layout = "${mdlc:item=MasterActionId}"
+                });
+
                 config.AddTarget(_uiLoggingTarget);
 
                 // This rule sends all logs from any logger with level Info or higher to our UI target.

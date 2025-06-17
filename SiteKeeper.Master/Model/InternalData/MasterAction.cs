@@ -17,22 +17,22 @@ namespace SiteKeeper.Master.Model.InternalData
         /// <summary>
         /// A unique identifier for this specific Master Action instance.
         /// </summary>
-        public string Id { get; }
+        public string Id { get; set; }
 
         /// <summary>
         /// The high-level type of the workflow being executed (e.g., EnvUpdateOnline).
         /// </summary>
-        public OperationType Type { get; }
+        public OperationType Type { get; set; }
 
         /// <summary>
         /// An optional user-provided name or description for this action.
         /// </summary>
-        public string? Name { get; }
+        public string? Name { get; set; }
 
         /// <summary>
         /// The user who initiated this action.
         /// </summary>
-        public string? InitiatedBy { get; }
+        public string? InitiatedBy { get; set; }
 
         /// <summary>
         /// The initial parameters that the action was started with, passed from the API request.
@@ -44,7 +44,7 @@ namespace SiteKeeper.Master.Model.InternalData
         /// <summary>
         /// The UTC timestamp when the action was initiated.
         /// </summary>
-        public DateTime StartTime { get; }
+        public DateTime StartTime { get; set; }
 
         /// <summary>
         /// The UTC timestamp when the action reached a terminal state (Succeeded, Failed, Cancelled).

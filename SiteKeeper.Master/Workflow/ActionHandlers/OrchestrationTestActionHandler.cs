@@ -126,7 +126,15 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
                     context.SetCompleted("Orchestration Test completed successfully.");
                     await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Success, Description = "Test Succeeded", ResultArtifact = multiNodeResult });
                 }
-                else
+                // Add a specific check for the Cancelled status
+                else if (multiNodeResult.FinalOperationState.OverallStatus == OperationOverallStatus.Cancelled)
+                {
+                    var cancelMessage = multiNodeResult.FinalOperationState.NodeTasks.FirstOrDefault(t => t.Status == NodeTaskStatus.Cancelled)?.StatusMessage ?? "Multi-node test stage was cancelled.";
+                    // Use the SetCancelled method on the context
+                    context.SetCancelled($"Orchestration Test was cancelled: {cancelMessage}");
+                    await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Cancelled, Description = "Test Cancelled", ResultArtifact = multiNodeResult });
+                }
+                else  // Everything else is a failure
                 {
                     var failureMessage = multiNodeResult.FinalOperationState.NodeTasks.FirstOrDefault()?.StatusMessage ?? "Multi-node test stage failed.";
                     context.SetFailed($"Orchestration Test failed: {failureMessage}");

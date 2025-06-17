@@ -15,6 +15,8 @@ using System.Collections.Generic;
 using System.Text.Json;
 using SiteKeeper.Master.Services;
 using SiteKeeper.Shared.DTOs.AgentHub;
+using System.Threading.Channels;
+using NLog;
 
 namespace SiteKeeper.Master.Workflow.StageHandlers
 {
@@ -45,6 +47,13 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
             public TaskCompletionSource LogFlushCompletionSource { get; }
             /// <summary>The progress reporter for this specific stage.</summary>
             public IProgress<StageProgress> ProgressReporter { get; }
+			
+            // for hanling logs arriving after the operation is completed
+			public Channel<SlaveTaskLogEntry> LogChannel { get; }
+
+            //// This will signal that the master-side journal writes are complete.
+            //public TaskCompletionSource AllJournalWritesCompletedSource { get; }
+
 
             public ActiveOperationContext(Operation operation, IProgress<StageProgress> progress, MasterActionContext parentMasterActionContext)
             {
@@ -54,6 +63,9 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
                 OperationCompletionSource = new TaskCompletionSource<MultiNodeOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
                 ConfirmedLogFlushNodes = new ConcurrentBag<string>();
                 LogFlushCompletionSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                // Initialize an unbounded channel for this operation's logs.
+                LogChannel = Channel.CreateUnbounded<SlaveTaskLogEntry>(new UnboundedChannelOptions { SingleReader = true });
             }
         }
         #endregion
@@ -63,6 +75,7 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
         private readonly IJournalService _journalService;
         private readonly INodeHealthMonitorService _nodeHealthMonitorService;
         private readonly ConcurrentDictionary<string, ActiveOperationContext> _activeOperations = new();
+        private readonly ConcurrentDictionary<string, string> _taskIdToOperationIdMap = new();
 
         public MultiNodeOperationStageHandler(
             ILogger<MultiNodeOperationStageHandler> logger,
@@ -98,52 +111,103 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
             }
 
             var opContext = new ActiveOperationContext(operation, progress, masterActionContext);
+
+            // use the UNIQUE internal operation ID as the key
             if (!_activeOperations.TryAdd(operation.Id, opContext))
             {
-                throw new InvalidOperationException($"Operation with ID {operation.Id} is already running.");
+                throw new InvalidOperationException($"An operation with the internal ID {operation.Id} is already running.");
             }
-            
+        
+            // Populate the TaskId map
+            foreach (var task in operation.NodeTasks)
+            {
+                _taskIdToOperationIdMap[task.TaskId] = operation.Id;
+            }
+              
             _logger.LogInformation("Starting multi-node operation stage: {OperationType} for MasterAction {MasterActionId}", operation.Type, masterActionContext.MasterActionId);
 
-            var healthMonitoringCts = new CancellationTokenSource();
-            var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, healthMonitoringCts.Token);
-            _ = MonitorNodeHealthForOperation(opContext, linkedCts.Token);
-
-            using (cancellationToken.Register(() => opContext.OperationCompletionSource.TrySetCanceled()))
+            // The parent MasterActionId is already set by the coordinator. Here, we add the
+            // more granular, stage-specific Operation.Id to the ambient context.
+            using (MappedDiagnosticsLogicalContext.SetScoped("SK-OperationId", operation.Id))
             {
-                try
-                {
-                    await StartReadinessCheckAndDispatchSequenceAsync(operation);
-                    var operationResult = await opContext.OperationCompletionSource.Task;
-                    await FlushAllNodeLogsAsync(operationResult, masterActionContext);
-                    return operationResult;
-                }
-                catch (TaskCanceledException)
-                {
-                    _logger.LogWarning("Multi-node operation stage {OperationId} was cancelled. Notifying slaves to terminate their tasks.", operation.Id);
-                    operation.OverallStatus = OperationOverallStatus.Cancelling;
-                    
-                    var tasksToCancel = operation.NodeTasks.Where(t => !t.Status.IsTerminal()).ToList();
-                    foreach (var task in tasksToCancel)
-                    {
-                        task.Status = NodeTaskStatus.Cancelling;
-                        await _agentConnectionManager.SendCancelTaskAsync(task.NodeName, new CancelTaskOnAgentRequest { OperationId = operation.Id, TaskId = task.TaskId, Reason = "Operation cancelled by master."});
-                    }
-                    
-                    await MonitorCancellationCompletion(opContext, TimeSpan.FromSeconds(15));
-                    
-                    operation.OverallStatus = OperationOverallStatus.Cancelled;
-                    operation.EndTime = DateTime.UtcNow;
+                // Start a background task that will consume logs from the channel for this operation's lifetime.
+                var logConsumerTask = ConsumeLogChannelAsync(opContext);
 
-                    var cancelledResult = new MultiNodeOperationResult { IsSuccess = false, FinalOperationState = operation };
-                    await FlushAllNodeLogsAsync(cancelledResult, masterActionContext);
-                    return cancelledResult;
-                }
-                finally
+                var healthMonitoringCts = new CancellationTokenSource();
+                var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, healthMonitoringCts.Token);
+                _ = MonitorNodeHealthForOperation(opContext, linkedCts.Token);
+
+                using (cancellationToken.Register(() => opContext.OperationCompletionSource.TrySetCanceled()))
                 {
-                    healthMonitoringCts.Cancel();
-                    _activeOperations.TryRemove(operation.Id, out _);
-                    _logger.LogInformation("Multi-node operation stage {OperationId} finished and cleaned up.", operation.Id);
+                    try
+                    {
+                        await StartReadinessCheckAndDispatchSequenceAsync(operation);
+                        var operationResult = await opContext.OperationCompletionSource.Task;
+                        await FlushAllNodeLogsAsync(operationResult, masterActionContext);
+                        return operationResult;
+                    }
+                    catch (TaskCanceledException)
+                    {
+                         _logger.LogWarning("Multi-node operation stage {OperationId} was cancelled by master request. Handling cancellation...", operation.Id);
+                        operation.OverallStatus = OperationOverallStatus.Cancelling;
+
+                        var tasksToCancel = operation.NodeTasks.Where(t => !t.Status.IsTerminal()).ToList();
+
+                        foreach (var task in tasksToCancel)
+                        {
+                            // Check the real-time status of the node for this task.
+                            var nodeState = await _nodeHealthMonitorService.GetNodeCachedStateAsync(task.NodeName);
+        
+                            // If the node is already offline, we can immediately mark its task as Cancelled.
+                            // There is no agent to send a command to or wait for a response from.
+                            if (nodeState?.ConnectivityStatus is AgentConnectivityStatus.Offline or AgentConnectivityStatus.Unreachable)
+                            {
+                                _logger.LogInformation("Task {TaskId} on offline node {NodeName} is being marked as Cancelled immediately.", task.TaskId, task.NodeName);
+                                task.Status = NodeTaskStatus.Cancelled;
+                                task.StatusMessage = "Task cancelled; the target node was offline.";
+                                task.EndTime = DateTime.UtcNow;
+                            }
+                            else
+                            {
+                                // If the node is online, request a graceful cancellation and set its status to Cancelling.
+                                _logger.LogInformation("Requesting cancellation for task {TaskId} on online node {NodeName}.", task.TaskId, task.NodeName);
+                                task.Status = NodeTaskStatus.Cancelling;
+                                await _agentConnectionManager.SendCancelTaskAsync(task.NodeName, new CancelTaskOnAgentRequest { OperationId = operation.Id, TaskId = task.TaskId, Reason = "Operation cancelled by master." });
+                            }
+                        }
+
+                        // Now, wait for all tasks that were marked 'Cancelling' to either be confirmed as cancelled by the slave
+                        // or for their nodes to go offline. This method has a built-in timeout.
+                        await MonitorCancellationCompletion(opContext, TimeSpan.FromSeconds(15));
+
+                        // After waiting, finalize the operation state.
+                        operation.OverallStatus = OperationOverallStatus.Cancelled;
+                        operation.EndTime = DateTime.UtcNow;
+
+                        var cancelledResult = new MultiNodeOperationResult { IsSuccess = false, FinalOperationState = operation };
+                        await FlushAllNodeLogsAsync(cancelledResult, masterActionContext);
+    
+                        // Explicitly set the TaskCompletionSource with the final result to unblock the awaiter.
+                        opContext.OperationCompletionSource.TrySetResult(cancelledResult);
+
+                        // Since we are handling the exception and completing the source, we return the result instead of letting the exception propagate.
+                        return cancelledResult;
+                    }
+                    finally
+                    {
+                        healthMonitoringCts.Cancel();
+                        _activeOperations.TryRemove(operation.Id, out _);
+
+                        foreach (var task in operation.NodeTasks)
+                        {
+                            _taskIdToOperationIdMap.TryRemove(task.TaskId, out _);
+                        }
+
+                        await logConsumerTask;
+ 
+
+                        _logger.LogInformation("Multi-node operation stage {OperationId} finished and cleaned up.", operation.Id);
+                    }
                 }
             }
         }
@@ -264,7 +328,7 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
                 task.Status = NodeTaskStatus.ReadinessCheckSent;
             }
 
-             _ = MonitorReadinessTimeout(operation.Id, TimeSpan.FromSeconds(30));
+            _ = MonitorReadinessTimeout(operation.Id, TimeSpan.FromSeconds(30));
         }
 
         /// <summary>
@@ -272,7 +336,12 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
         /// </summary>
         public async Task ProcessSlaveTaskReadinessAsync(SlaveTaskReadinessReport readinessReport)
         {
-            if (!_activeOperations.TryGetValue(readinessReport.OperationId, out var opContext)) return;
+            if (!_taskIdToOperationIdMap.TryGetValue(readinessReport.TaskId, out var internalOpId) ||
+                !_activeOperations.TryGetValue(internalOpId, out var opContext))
+            {
+                _logger.LogWarning("Received readiness report for an unknown or completed task/operation: TaskId {TaskId}", readinessReport.TaskId);
+                return;
+            }
 
             var task = opContext.Operation.NodeTasks.FirstOrDefault(t => t.TaskId == readinessReport.TaskId);
             if (task == null) return;
@@ -294,6 +363,10 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
 
                 await _agentConnectionManager.SendSlaveTaskAsync(task.NodeName, slaveTaskInstruction);
                 task.Status = NodeTaskStatus.TaskDispatched;
+
+                // Start monitoring for execution timeout for this specific task.
+                var executionTimeout = TimeSpan.FromSeconds(slaveTaskInstruction.TimeoutSeconds ?? 30);
+                _ = MonitorExecutionTimeoutAsync(opContext, task.TaskId, executionTimeout);
             }
             else
             {
@@ -401,6 +474,8 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
         private async Task MonitorReadinessTimeout(string operationId, TimeSpan timeout)
         {
             await Task.Delay(timeout);
+
+            // The key for _activeOperations is the internal operation ID again, so this is now correct.
             if (_activeOperations.TryGetValue(operationId, out var opContext) && opContext.Operation.OverallStatus == OperationOverallStatus.AwaitingNodeReadiness)
             {
                 _logger.LogWarning("Readiness check timed out for operation {OperationId}", operationId);
@@ -416,29 +491,134 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
             }
         }
         
+        // ADD this new consumer method
+        private async Task ConsumeLogChannelAsync(ActiveOperationContext opContext)
+        {
+            try
+            {
+                // This will efficiently loop and process logs as they are added to the channel.
+                await foreach (var logEntry in opContext.LogChannel.Reader.ReadAllAsync())
+                {
+                    try
+                    {
+                        // The logEntry.OperationId is the internal ID for the stage's operation,
+                        // but the JournalService tracks journals by the parent MasterActionId.
+                        await _journalService.AppendToStageLogAsync(opContext.ParentMasterActionContext.MasterActionId, logEntry);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error writing slave log from channel to journal for OpId {OperationId}", logEntry.OperationId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Log channel consumer for OpId {OperationId} failed unexpectedly.", opContext.Operation.Id);
+            }
+        }
+
         /// <summary>
         /// Commands all nodes to flush their logs for a completed operation and waits for their confirmation.
         /// </summary>
         private async Task FlushAllNodeLogsAsync(MultiNodeOperationResult operationResult, MasterActionContext masterActionContext)
         {
-            var participatingNodes = operationResult.FinalOperationState.NodeTasks.Select(t => t.NodeName).Distinct().ToList();
-            if (!participatingNodes.Any()) return;
+            var allParticipatingNodes = operationResult.FinalOperationState.NodeTasks.Select(t => t.NodeName).Distinct().ToList();
+            if (!allParticipatingNodes.Any()) return;
             if (!_activeOperations.TryGetValue(operationResult.FinalOperationState.Id, out var opContext)) return;
 
-            masterActionContext.LogInfo($"Operation stage complete. Waiting for {participatingNodes.Count} node(s) to flush final logs...");
-            
-            foreach (var nodeName in participatingNodes)
+            // 1. Identify which participating nodes are actually online.
+            var onlineNodes = new List<string>();
+            foreach (var nodeName in allParticipatingNodes)
             {
-                await _agentConnectionManager.RequestLogFlushForTask(nodeName, operationResult.FinalOperationState.Id);
+                // Use the health monitor to get the current cached status.
+                var nodeState = await _nodeHealthMonitorService.GetNodeCachedStateAsync(nodeName);
+                if (nodeState?.ConnectivityStatus == AgentConnectivityStatus.Online)
+                {
+                    onlineNodes.Add(nodeName);
+                }
             }
 
-            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(30));
-            var completedTask = await Task.WhenAny(opContext.LogFlushCompletionSource.Task, timeoutTask);
-            
-            if (completedTask == timeoutTask)
-                masterActionContext.Logger.LogWarning("Timed out waiting for all nodes to confirm log flush for OperationId {OperationId}.", operationResult.FinalOperationState.Id);
-            else 
-                 masterActionContext.LogInfo("All node logs have been flushed successfully.");
+            // 2. Only request and wait for flushes from online nodes.
+            if (onlineNodes.Any())
+            {
+                masterActionContext.LogInfo($"Operation stage complete. Requesting log flush from {onlineNodes.Count} online node(s)...");
+
+                foreach (var nodeName in onlineNodes)
+                {
+                    await _agentConnectionManager.RequestLogFlushForTask(nodeName, operationResult.FinalOperationState.Id);
+                }
+
+                // 3. Implement a smarter wait loop that only considers the online nodes.
+                var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                try
+                {
+                    while (opContext.ConfirmedLogFlushNodes.Count < onlineNodes.Count && !timeoutCts.IsCancellationRequested)
+                    {
+                        await Task.Delay(250, timeoutCts.Token);
+                    }
+
+                    if (timeoutCts.IsCancellationRequested)
+                    {
+                         masterActionContext.Logger.LogWarning("Timed out waiting for all online nodes to confirm log flush.");
+                    }
+                    else
+                    {
+                        masterActionContext.LogInfo("All online nodes have confirmed their logs have been sent.");
+                    }
+                }
+                catch (TaskCanceledException)
+                {
+                     masterActionContext.Logger.LogWarning("Timed out waiting for all online nodes to confirm log flush.");
+                }
+                finally
+                {
+                    timeoutCts.Dispose();
+                }
+            }
+            else
+            {
+                masterActionContext.LogInfo("No online nodes to flush logs from. Skipping wait.");
+            }
+  
+            // Mark the channel as "complete for writing". No new items can be added.
+            opContext.LogChannel.Writer.Complete();
+
+            //  Wait for the channel reader's Completion task. This task only finishes
+            //  when the channel is marked complete AND all items have been read and processed.
+            await opContext.LogChannel.Reader.Completion;
+
+            masterActionContext.LogInfo("All received logs have been successfully written to the journal.");
+        }
+
+        public Task JournalSlaveLogAsync(SlaveTaskLogEntry logEntry)
+        {
+            // This method receives a log entry that may not have a TaskId if it's a general operation log.
+            // However, for logs from a slave task, it SHOULD have a TaskId.
+            // The lookup must be resilient.
+            string? internalOpId = null;
+            if (!string.IsNullOrEmpty(logEntry.TaskId))
+            {
+                _taskIdToOperationIdMap.TryGetValue(logEntry.TaskId, out internalOpId);
+            }
+
+            _logger.LogDebug("STAGE-HANDLER: Journaling slave log for TaskId '{TaskId}'. Mapped to InternalOpId: '{InternalOpId}'", logEntry.TaskId, internalOpId ?? "Not Found");
+
+            if (internalOpId == null || !_activeOperations.TryGetValue(internalOpId, out var opContext))
+            {
+                 _logger.LogWarning("Could not journal slave log: No active operation context found for MasterActionId {OperationId} / TaskId {TaskId}", 
+                    logEntry.OperationId, logEntry.TaskId);
+                return Task.CompletedTask;
+            }
+ 
+            _logger.LogDebug("STAGE-HANDLER: Found active context for OpId {OpId}. Enqueuing log message to internal channel.", internalOpId);
+
+            // Instead of writing directly, just enqueue the log entry. This is a fast, non-blocking operation.
+            if (!opContext.LogChannel.Writer.TryWrite(logEntry))
+            {
+                _logger.LogWarning("Could not write log to channel for OpId {opId}; channel may be closed.", logEntry.OperationId);
+            }
+
+            return Task.CompletedTask;
         }
 
         /// <summary>
@@ -446,18 +626,49 @@ namespace SiteKeeper.Master.Workflow.StageHandlers
         /// </summary>
         public void ConfirmLogFlush(string operationId, string nodeName)
         {
+            // lookup using the internal Operation.Id as the key.
+            // This is the "translation" from the specific operationId back to the internal context object.
             if (_activeOperations.TryGetValue(operationId, out var opContext))
             {
                 opContext.ConfirmedLogFlushNodes.Add(nodeName);
-                _logger.LogDebug("Received log flush confirmation from node {NodeName} for operation {OperationId}.", nodeName, operationId);
+                _logger.LogDebug("Received log flush confirmation from node {NodeName} for internal operation {OperationId}.", nodeName, operationId);
 
                 var totalNodes = opContext.Operation.NodeTasks.Select(t => t.NodeName).Distinct().Count();
                 if (opContext.ConfirmedLogFlushNodes.Count >= totalNodes)
                 {
-                    _logger.LogInformation("All nodes have confirmed log flush for operation {OperationId}.", operationId);
+                    _logger.LogInformation("All nodes have confirmed log flush for internal operation {OperationId}.", operationId);
+                    // Signal that the slave confirmation phase is complete.
                     opContext.LogFlushCompletionSource.TrySetResult();
                 }
             }
+            else
+            {
+                // This log message is now more accurate.
+                _logger.LogWarning("Received log flush confirmation for an unknown or already completed operation: {OperationId}", operationId);
+            }
         }
-    }
+
+        /// <summary>
+        /// Monitors a single dispatched task for execution timeout.
+        /// </summary>
+        private async Task MonitorExecutionTimeoutAsync(ActiveOperationContext opContext, string taskId, TimeSpan timeout)
+        {
+            await Task.Delay(timeout);
+
+            // Re-check that the operation is still active.
+            if (_activeOperations.TryGetValue(opContext.Operation.Id, out var currentOpContext))
+            {
+                var task = currentOpContext.Operation.NodeTasks.FirstOrDefault(t => t.TaskId == taskId);
+
+                // If the task exists and is not yet in a terminal state, it has timed out.
+                if (task != null && !task.Status.IsTerminal())
+                {
+                    _logger.LogWarning("Execution timed out for task {TaskId} in operation {OperationId} after {Seconds} seconds.", taskId, opContext.Operation.Id, timeout.TotalSeconds);
+                    task.Status = NodeTaskStatus.TimedOut;
+                    task.StatusMessage = $"Task did not complete within the {timeout.TotalSeconds}-second timeout period and was marked as timed out by the master.";
+                    task.EndTime = DateTime.UtcNow;
+                    await RecalculateOperationStatusAsync(currentOpContext);
+                }
+            }
+        }    }
 }

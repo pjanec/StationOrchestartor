@@ -32,26 +32,26 @@ namespace SiteKeeper.Master.Model.InternalData
         /// </summary>
         /// <example>"op-deploy-webapp-123-AppServer01-1"</example>
         [Required]
-        public string TaskId { get; private set; }
+        public string TaskId { get; set; }
 
         /// <summary>
         /// Identifier of the <see cref="Operation"/> this task belongs to.
         /// </summary>
         [Required]
-        public string OperationId { get; private set; }
+        public string OperationId { get; set; }
 
         /// <summary>
         /// The name of the node (Slave Agent) this task is targeted at.
         /// </summary>
         /// <example>"AppServer01"</example>
         [Required]
-        public string NodeName { get; private set; }
+        public string NodeName { get; set; }
 
         /// <summary>
         /// The type of task to be executed by the Slave Agent.
         /// </summary>
         [Required]
-        public SlaveTaskType TaskType { get; private set; }
+        public SlaveTaskType TaskType { get; set; }
 
         /// <summary>
         /// Current status of this task.
@@ -64,12 +64,12 @@ namespace SiteKeeper.Master.Model.InternalData
         /// Structure depends on the <see cref="TaskType"/>.
         /// </summary>
         /// <example>{"packageName": "MyWebApp", "version": "1.2.0"}</example>
-        public Dictionary<string, object> TaskPayload { get; private set; }
+        public Dictionary<string, object> TaskPayload { get; set; }
 
         /// <summary>
         /// Timestamp (UTC) when this task was created and queued.
         /// </summary>
-        public DateTime CreationTime { get; private set; }
+        public DateTime CreationTime { get; set; }
 
         /// <summary>
         /// Timestamp (UTC) when this task was actually sent to the agent or started processing locally.

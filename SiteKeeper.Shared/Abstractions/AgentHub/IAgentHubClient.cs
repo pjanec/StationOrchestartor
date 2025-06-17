@@ -46,6 +46,14 @@ namespace SiteKeeper.Shared.Abstractions.AgentHub
         /// <param name="nodeName">The name of the node that completed the flush.</param>
         Task ConfirmLogFlushForTask(string operationId, string nodeName);
 
+        /// <summary>
+        /// Reports a log entry from a slave task to the master.
+        /// This is the missing method.
+        /// </summary>
+        /// <param name="logEntry">The DTO containing the contextualized log message.</param>
+        Task ReportSlaveTaskLogAsync(SlaveTaskLogEntry logEntry);
+        
+        
         // Methods that were previously in AgentHub.cs but might be specific or need review:
         // Task SendDiagnosticsReportAsync(AgentNodeDiagnosticsReport diagnosticsReport);
         // Task SendGeneralCommandResponseAsync(AgentGeneralCommandResponse commandResponse);

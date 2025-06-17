@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 using NLog;
 using NLog.Config;
+using NLog.Targets;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -44,11 +45,33 @@ namespace SiteKeeper.Slave.Services.NLog2
                     Name = "masterBoundTarget",
                     Layout = "${longdate}|${level:uppercase=true}|[SlaveTaskLog] ${message}"
                 };
+
+                // setup MLDC captured properties
+
+                masterTarget.ContextProperties.Add(new TargetPropertyWithContext
+                {
+                    Name = "SK-OperationId",
+                    Layout = "${mdlc:item=SK-OperationId}"
+                });
+                masterTarget.ContextProperties.Add(new TargetPropertyWithContext
+                {
+                    Name = "SK-TaskId",
+                    Layout = "${mdlc:item=SK-TaskId}"
+                });
+                masterTarget.ContextProperties.Add(new TargetPropertyWithContext
+                {
+                    Name = "SK-NodeName",
+                    Layout = "${mdlc:item=SK-NodeName}"
+                });
+
                 config.AddTarget(masterTarget);
 
                 // 2. Create a rule to send logs from "Executive.*" to this new target.
                 var rule = new LoggingRule($"{SiteKeeperMasterBoundTarget.ExecutiveLogPrefix}.*", NLog.LogLevel.Debug, masterTarget);
-                config.LoggingRules.Add(rule);
+
+                // Insert the rule at the beginning (index 0) to ensure it is evaluated 
+                // before any other potentially "final" rules.
+                config.LoggingRules.Insert(0, rule);
 
                 // 3. Re-apply the modified configuration to the current LogManager.
                 LogManager.ReconfigExistingLoggers();

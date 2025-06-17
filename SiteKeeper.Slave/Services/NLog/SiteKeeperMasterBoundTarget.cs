@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using NLog;
+using NLog.Common;
 using NLog.Targets;
 using SiteKeeper.Shared.DTOs.AgentHub;
 using System;
@@ -30,7 +31,7 @@ namespace SiteKeeper.Slave.Services.NLog2
     /// to wait until all currently queued logs have been sent, ensuring log synchronization.
     /// </remarks>
     [Target("SiteKeeperMasterBound")]
-    public sealed class SiteKeeperMasterBoundTarget : TargetWithLayout
+    public sealed class SiteKeeperMasterBoundTarget : TargetWithContext
     {
         private static Func<HubConnection?>? _hubConnectionProvider;
         private readonly Channel<object> _logQueue;
@@ -61,7 +62,18 @@ namespace SiteKeeper.Slave.Services.NLog2
         /// and should return quickly.
         /// </summary>
         /// <param name="logEvent">The log event information.</param>
-        protected override void Write(LogEventInfo logEvent) => _logQueue.Writer.TryWrite(logEvent);
+        protected override void Write(LogEventInfo logEvent)
+        {
+            var props = GetAllProperties( logEvent ); // get mdlc properties for this log event
+
+			// save all to logEvent.Properties
+			foreach( var prop in props )
+			{
+				logEvent.Properties[prop.Key] = prop.Value;
+			}
+
+            _logQueue.Writer.TryWrite(logEvent);
+        }
 
         /// <summary>
         /// Enqueues a special marker and returns a task that completes when the marker is processed.
@@ -130,13 +142,17 @@ namespace SiteKeeper.Slave.Services.NLog2
                     TimestampUtc = logEvent.TimeStamp.ToUniversalTime()
                 };
 
-                // Asynchronously send the log entry to the master.
+                // The rest of this method can remain the same...
+                var logger = LogManager.GetCurrentClassLogger();
+                logger.Log(NLog.LogLevel.Debug, "Attempting to send SlaveTaskLogEntry to master. OpId: {0}, TaskId: {1}, Message: '{2}'", entry.OperationId, entry.TaskId, entry.LogMessage);
+
                 await hubConnection.InvokeAsync("ReportSlaveTaskLogAsync", entry);
+        
+                logger.Log(NLog.LogLevel.Debug, "Successfully invoked ReportSlaveTaskLogAsync on master for TaskId: {0}", entry.TaskId);
+
             }
             catch (Exception ex)
             {
-                // Use NLog's internal logger to report issues with this target itself.
-                // This avoids recursive loops.
                 LogManager.GetCurrentClassLogger().Error(ex, "Failed to send slave task log to master.");
             }
         }

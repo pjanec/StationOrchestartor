@@ -31,7 +31,7 @@ namespace SiteKeeper.Master.Model.InternalData
         /// </summary>
         /// <example>"op-envupdate-abc123xyz"</example>
         [Required]
-        public string Id { get; private set; }
+        public string Id { get; set; }
 
         /// <summary>
         /// Optional user-friendly name or description for the operation.
@@ -43,7 +43,7 @@ namespace SiteKeeper.Master.Model.InternalData
         /// The type of operation being performed.
         /// </summary>
         [Required]
-        public OperationType Type { get; private set; }
+        public OperationType Type { get; set; }
 
         /// <summary>
         /// The current overall status of the operation.
@@ -55,7 +55,7 @@ namespace SiteKeeper.Master.Model.InternalData
         /// Timestamp (UTC) when the operation was created/queued.
         /// </summary>
         [Required]
-        public DateTime CreationTime { get; private set; }
+        public DateTime CreationTime { get; set; }
 
         /// <summary>
         /// Timestamp (UTC) when the operation actually started execution.
@@ -74,7 +74,7 @@ namespace SiteKeeper.Master.Model.InternalData
         /// This data is NOT used for execution logic by the dispatcher; it is stored
         /// in the journal for auditing and debugging purposes to preserve the business intent.
         /// </summary>
-        public IReadOnlyDictionary<string, object> AuditContext { get; private set; }
+        public IReadOnlyDictionary<string, object> AuditContext { get; set; }
 
         /// <summary>
         /// Identifier of the user or system component that initiated the operation.
@@ -85,7 +85,7 @@ namespace SiteKeeper.Master.Model.InternalData
         /// <summary>
         /// List of tasks (<see cref="NodeTask"/>) that comprise this operation, distributed across nodes.
         /// </summary>
-        public List<NodeTask> NodeTasks { get; private set; }
+        public List<NodeTask> NodeTasks { get; set; }
 
         /// <summary>
         /// Overall progress percentage of the operation (0-100).

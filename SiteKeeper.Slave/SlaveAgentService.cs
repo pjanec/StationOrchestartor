@@ -349,22 +349,10 @@ namespace SiteKeeper.Slave
 
             _masterConnection.On<SlaveTaskInstruction>("ReceiveSlaveTaskAsync", async (instruction) =>
             {
-                // Set MDLC context for the duration of this task handling
-                NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcOperationId, instruction.OperationId);
-                NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcTaskId, instruction.TaskId);
-                try
+                await HandleSignalRInvokeAsync(instruction.OperationId, instruction.TaskId, async () =>
                 {
-                    await HandleSignalRInvokeAsync(instruction.OperationId, instruction.TaskId, async () =>
-                    {
-                        await _operationHandler.HandleSlaveTaskAsync(instruction, _activeSlaveTasks, _concurrentTaskSemaphore);
-                    });
-                }
-                finally
-                {
-                    // CRITICAL: Clear the MDLC context to prevent bleeding into other log messages
-                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcOperationId);
-                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcTaskId);
-                }
+                    await _operationHandler.HandleSlaveTaskAsync(instruction, _activeSlaveTasks, _concurrentTaskSemaphore);
+                });
             });
 
             _masterConnection.On<CancelTaskOnAgentRequest>("ReceiveCancelTaskRequestAsync", async (request) =>

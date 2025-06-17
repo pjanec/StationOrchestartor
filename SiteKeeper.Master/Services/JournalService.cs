@@ -343,6 +343,13 @@ namespace SiteKeeper.Master.Services
             await fileLock.WaitAsync();
             try
             {
+				// because of a highly async nature of the service, we ensure the directory exists before writing.
+				var directory = Path.GetDirectoryName(filePath);
+                if (directory != null)
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
                 var json = JsonSerializer.Serialize(data, _jsonOptions);
                 await File.WriteAllTextAsync(filePath, json);
             }
@@ -361,6 +368,13 @@ namespace SiteKeeper.Master.Services
             await fileLock.WaitAsync();
             try
             {
+				// because of a highly async nature of the service, we ensure the directory exists before writing.
+				var directory = Path.GetDirectoryName(filePath);
+                if (directory != null)
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
                 await File.AppendAllTextAsync(filePath, text);
             }
             finally
@@ -556,6 +570,8 @@ namespace SiteKeeper.Master.Services
         /// <param name="logEntry">The log entry DTO containing the message and source node.</param>
         public async Task AppendToStageLogAsync(string masterActionId, SlaveTaskLogEntry logEntry)
         {
+            _logger.LogDebug("JOURNAL-SERVICE: AppendToStageLogAsync called for MasterActionId '{MasterActionId}', Node: '{NodeName}'", masterActionId, logEntry.NodeName);
+
             // Find the active journal state using the masterActionId.
             if (!_activeJournals.TryGetValue(masterActionId, out var state))
             {
@@ -565,6 +581,9 @@ namespace SiteKeeper.Master.Services
 
             var logFileName = $"{SanitizeFileName(logEntry.NodeName)}.log";
             var logFilePath = Path.Combine(state.CurrentStagePath, "logs", logFileName);
+
+            _logger.LogDebug("JOURNAL-SERVICE: Preparing to write log to file: '{LogFilePath}'", logFilePath);
+
             var logLine = $"{logEntry.TimestampUtc:yyyy-MM-dd HH:mm:ss.fff}Z [{logEntry.LogLevel}] {logEntry.LogMessage}{Environment.NewLine}";
             await AppendTextAsync(logFilePath, logLine);
         }
@@ -783,9 +802,42 @@ namespace SiteKeeper.Master.Services
         /// <summary>
         /// Determines if the task status represents a final, terminal state.
         /// </summary>
+        /// <param name="status">The node task status.</param>
+        /// <returns><c>true</c> if the status is a terminal state; otherwise, <c>false</c>.</returns>
         public static bool IsTerminal(this NodeTaskStatus status)
         {
-            return status >= NodeTaskStatus.Succeeded;
+            switch (status)
+            {
+                // Early terminal states (before execution)
+                case NodeTaskStatus.NotReadyForTask:
+                case NodeTaskStatus.ReadinessCheckTimedOut:
+                case NodeTaskStatus.DispatchFailed_Prepare:
+                
+                // Post-execution terminal states
+                case NodeTaskStatus.Succeeded:
+                case NodeTaskStatus.SucceededWithIssues:
+                case NodeTaskStatus.Failed:
+                case NodeTaskStatus.Cancelled:
+                case NodeTaskStatus.CancellationFailed:
+                case NodeTaskStatus.TaskDispatchFailed_Execute:
+                case NodeTaskStatus.NodeOfflineDuringTask:
+                case NodeTaskStatus.TimedOut:
+                    return true;
+                
+                // Non-terminal states
+                case NodeTaskStatus.Unknown:
+                case NodeTaskStatus.Pending:
+                case NodeTaskStatus.AwaitingReadiness:
+                case NodeTaskStatus.ReadinessCheckSent:
+                case NodeTaskStatus.ReadyToExecute:
+                case NodeTaskStatus.TaskDispatched:
+                case NodeTaskStatus.Starting:
+                case NodeTaskStatus.InProgress:
+                case NodeTaskStatus.Retrying:
+                case NodeTaskStatus.Cancelling:
+                default:
+                    return false;
+            }
         }
     }
 }
