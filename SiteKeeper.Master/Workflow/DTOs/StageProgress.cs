@@ -7,7 +7,7 @@ namespace SiteKeeper.Master.Workflow.DTOs
     /// Represents a progress update for an individual stage within a <see cref="MasterAction"/>.
     /// </summary>
     /// <remarks>
-    /// Instances of this class are typically created by <see cref="IStageHandler{TInput, TOutput}"/> implementations
+    /// Instances of this class are typically created by <see cref="INodeCoordinator{TOutput}"/> implementations (or other stage handlers)
     /// and reported to the <see cref="MasterActionContext"/> via its <see cref="MasterActionContext.StageProgress"/>
     /// property (which is an <see cref="IProgress{T}"/> of <see cref="StageProgress"/>).
     /// This allows the <see cref="MasterActionContext"/> to calculate and update the overall progress

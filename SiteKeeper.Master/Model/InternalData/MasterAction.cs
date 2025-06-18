@@ -69,10 +69,10 @@ namespace SiteKeeper.Master.Model.InternalData
         public object? FinalResultPayload { get; set; }
 
         /// <summary>
-        /// A reference to the internal 'Operation' object of the currently running multi-node stage.
+        /// A reference to the internal 'NodeAction' object of the currently running multi-node stage.
         /// This is used to provide real-time node task details to the UI.
         /// </summary>
-        public Operation? CurrentStageOperation { get; set; }
+        public NodeAction? CurrentStageOperation { get; set; }
         
         /// <summary>
         /// A list to store the most recent log messages for this action.

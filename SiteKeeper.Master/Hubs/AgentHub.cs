@@ -1,8 +1,7 @@
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using SiteKeeper.Master.Abstractions.Services;
-using SiteKeeper.Master.Services;
-using SiteKeeper.Master.Workflow.StageHandlers; // The new location for the stage handler
+using SiteKeeper.Master.Services; // NodeCoordinator is now in this namespace
 using SiteKeeper.Shared.Abstractions.AgentHub;
 using SiteKeeper.Shared.DTOs.AgentHub;
 using SiteKeeper.Shared.DTOs.MasterSlave;
@@ -19,7 +18,7 @@ namespace SiteKeeper.Master.Hubs
     /// <remarks>
     /// In the current architecture, this hub primarily acts as a lightweight message router. Its main
     /// responsibility is to receive messages from connected slaves and forward them to the
-    /// appropriate singleton service (e.g., <see cref="IAgentConnectionManagerService"/>, <see cref="MultiNodeOperationStageHandler"/>)
+    /// appropriate singleton service (e.g., <see cref="IAgentConnectionManagerService"/>, <see cref="NodeCoordinator"/>)
     /// for processing. It generally does not contain complex business logic itself.
     /// Connection lifecycle events (connect/disconnect) are managed here and delegated to the <see cref="IAgentConnectionManagerService"/>.
     /// A <c>NodeNameItemKey</c> is used with <see cref="HubCallerContext.Items"/> to associate SignalR connections with authenticated node names.
@@ -28,9 +27,9 @@ namespace SiteKeeper.Master.Hubs
     {
         private const string NodeNameItemKey = "NodeName"; // Key for storing NodeName in Context.Items
         private readonly IAgentConnectionManagerService _agentConnectionManager;
-        private readonly MultiNodeOperationStageHandler _multiNodeStageHandler; // Concrete class injection for direct method calls
+        private readonly NodeCoordinator _multiNodeStageHandler; // Concrete class injection for direct method calls
         private readonly ILogger<AgentHub> _logger;
-        // IJournalService is injected but primarily used via MultiNodeOperationStageHandler for slave logs.
+        // IJournalService is injected but primarily used via NodeCoordinator for slave logs.
         // If AgentHub were to directly journal other specific events, it could use this.
         private readonly IJournalService _journalService;
 
@@ -44,7 +43,7 @@ namespace SiteKeeper.Master.Hubs
         /// <exception cref="ArgumentNullException">Thrown if any of the injected services are null.</exception>
         public AgentHub(
             IAgentConnectionManagerService agentConnectionManager,
-            MultiNodeOperationStageHandler multiNodeStageHandler, // Assuming this is correctly registered as singleton or scoped if Hub is transient
+            NodeCoordinator multiNodeStageHandler, // Assuming this is correctly registered as singleton or scoped if Hub is transient
             ILogger<AgentHub> logger,
             IJournalService journalService)
         {
@@ -126,7 +125,7 @@ namespace SiteKeeper.Master.Hubs
 
         /// <summary>
         /// Receives a task progress update from a slave agent and forwards it directly to the
-        /// <see cref="MultiNodeOperationStageHandler"/> for processing and state updates.
+        /// <see cref="NodeCoordinator"/> for processing and state updates.
         /// </summary>
         /// <param name="taskUpdate">The <see cref="SlaveTaskProgressUpdate"/> DTO from the agent.</param>
         /// <returns>A <see cref="Task"/> representing the asynchronous processing of the task update.</returns>
@@ -139,7 +138,7 @@ namespace SiteKeeper.Master.Hubs
 
         /// <summary>
         /// Receives a task readiness report from a slave agent and forwards it directly to the
-        /// <see cref="MultiNodeOperationStageHandler"/> for processing.
+        /// <see cref="NodeCoordinator"/> for processing.
         /// </summary>
         /// <param name="readinessReport">The <see cref="SlaveTaskReadinessReport"/> DTO from the agent.</param>
         /// <returns>A <see cref="Task"/> representing the asynchronous processing of the readiness report.</returns>
@@ -152,30 +151,30 @@ namespace SiteKeeper.Master.Hubs
 
         /// <summary>
         /// Receives a log flush confirmation from a slave agent and forwards it to the
-        /// <see cref="MultiNodeOperationStageHandler"/>. This is part of log synchronization.
+        /// <see cref="NodeCoordinator"/>. This is part of log synchronization.
         /// </summary>
-        /// <param name="operationId">The ID of the operation for which logs were flushed.</param>
+        /// <param name="actionId">The ID of the node action for which logs were flushed.</param>
         /// <param name="nodeName">The name of the node confirming the flush.</param>
         /// <returns>A <see cref="Task"/> representing the completion of this hub method call.</returns>
-        public Task ConfirmLogFlushForTask(string operationId, string nodeName) // Removed async as it's a synchronous call to handler
+        public Task ConfirmLogFlushForTask(string actionId, string nodeName)
         {
-            _logger.LogDebug("Log flush confirmation from Node: {NodeName} for OperationId: {OperationId}", nodeName, operationId);
-            _multiNodeStageHandler.ConfirmLogFlush(operationId, nodeName); // This method in handler is void
+            _logger.LogDebug("Log flush confirmation from Node: {NodeName} for ActionId: {ActionId}", nodeName, actionId);
+            _multiNodeStageHandler.ConfirmLogFlush(actionId, nodeName);
             return Task.CompletedTask;
         }
 
         /// <summary>
         /// Receives a log entry from a slave agent related to a task and forwards it to the
-        /// <see cref="MultiNodeOperationStageHandler"/> for journaling.
+        /// <see cref="NodeCoordinator"/> for journaling.
         /// </summary>
         /// <param name="logEntry">The <see cref="SlaveTaskLogEntry"/> DTO from the slave agent.</param>
         /// <returns>A <see cref="Task"/> representing the asynchronous processing of the log entry.</returns>
         public async Task ReportSlaveTaskLogAsync(SlaveTaskLogEntry logEntry)
         {
-            _logger.LogTrace("Slave task log from Node: {NodeName}, OpId: {OpId}, TaskId: {TaskId}, Message: '{Message}'",
-                logEntry.NodeName, logEntry.OperationId, logEntry.TaskId, logEntry.LogMessage);
+            _logger.LogTrace("Slave task log from Node: {NodeName}, ActionId: {ActionId}, TaskId: {TaskId}, Message: '{Message}'",
+                logEntry.NodeName, logEntry.ActionId, logEntry.TaskId, logEntry.LogMessage);
 
-            if (logEntry == null || string.IsNullOrEmpty(logEntry.OperationId))
+            if (logEntry == null || string.IsNullOrEmpty(logEntry.ActionId))
             {
                 _logger.LogWarning("Received an invalid or empty log entry from a slave on connection {ConnectionId}.", Context.ConnectionId);
                 return;

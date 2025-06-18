@@ -111,17 +111,17 @@ namespace SiteKeeper.Master.Services
         // Documentation will be added assuming they are still used or are for internal compatibility.
 
         /// <summary>
-        /// Records the initiation of a new general operation (legacy or internal).
-        /// This method creates a directory structure for the operation's journal and writes initial metadata.
+        /// Records the initiation of a new general node action (legacy or internal).
+        /// This method creates a directory structure for the action's journal and writes initial metadata.
         /// </summary>
-        /// <param name="operation">The <see cref="Operation"/> object representing the operation being initiated.</param>
+        /// <param name="nodeAction">The <see cref="NodeAction"/> object representing the action being initiated.</param>
         /// <returns>A task representing the asynchronous operation.</returns>
-        public async Task RecordOperationInitiatedAsync(Operation operation)
+        public async Task RecordOperationInitiatedAsync(NodeAction nodeAction)
         {
-            var journalFolderName = $"{operation.CreationTime:yyyyMMddHHmmssfff}-{SanitizeFileName(operation.Id)}";
-            var opFolderPath = Path.Combine(_journalEnvRootPath, "Operations", journalFolderName); // Assuming a subfolder for these
+            var journalFolderName = $"{nodeAction.CreationTime:yyyyMMddHHmmssfff}-{SanitizeFileName(nodeAction.Id)}";
+            var opFolderPath = Path.Combine(_journalEnvRootPath, "Operations", journalFolderName);
 
-            if (_operationJournalFolders.TryAdd(operation.Id, opFolderPath)) // Use actual path as value
+            if (_operationJournalFolders.TryAdd(nodeAction.Id, opFolderPath))
             {
                 try
                 {
@@ -130,66 +130,66 @@ namespace SiteKeeper.Master.Services
                     Directory.CreateDirectory(Path.Combine(opFolderPath, "results"));
 
                     var infoPath = Path.Combine(opFolderPath, "info.json");
-                    await WriteJsonAsync(infoPath, operation);
-                    _logger.LogInformation("Legacy Operation Journal created for OperationId '{OperationId}' at '{OpFolderPath}'", operation.Id, opFolderPath);
+                    await WriteJsonAsync(infoPath, nodeAction);
+                    _logger.LogInformation("Legacy NodeAction Journal created for ActionId '{ActionId}' at '{OpFolderPath}'", nodeAction.Id, opFolderPath);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to create legacy operation journal directory for OperationId '{OperationId}'", operation.Id);
-                    _operationJournalFolders.TryRemove(operation.Id, out _);
+                    _logger.LogError(ex, "Failed to create legacy node action journal directory for ActionId '{ActionId}'", nodeAction.Id);
+                    _operationJournalFolders.TryRemove(nodeAction.Id, out _);
                 }
             }
         }
         
         /// <summary>
-        /// Records the completion of a general operation (legacy or internal).
+        /// Records the completion of a general node action (legacy or internal).
         /// This method updates the 'info.json' file and writes an 'overall_result.json'.
         /// </summary>
-        /// <param name="operation">The <see cref="Operation"/> object in its final terminal state.</param>
+        /// <param name="nodeAction">The <see cref="NodeAction"/> object in its final terminal state.</param>
         /// <returns>A task representing the asynchronous operation.</returns>
-        public async Task RecordOperationCompletedAsync(Operation operation)
+        public async Task RecordOperationCompletedAsync(NodeAction nodeAction)
         {
-            if (_operationJournalFolders.TryGetValue(operation.Id, out var opFolderPath))
+            if (_operationJournalFolders.TryGetValue(nodeAction.Id, out var opFolderPath))
             {
                 var infoPath = Path.Combine(opFolderPath, "info.json");
-                await WriteJsonAsync(infoPath, operation); 
+                await WriteJsonAsync(infoPath, nodeAction);
 
                 var overallResultPath = Path.Combine(opFolderPath, "results", "overall_result.json");
-                await WriteJsonAsync(overallResultPath, operation);
+                await WriteJsonAsync(overallResultPath, nodeAction);
 
-                _operationJournalFolders.TryRemove(operation.Id, out _);
-                _logger.LogInformation("Legacy Operation Journal finalized for OperationId '{OperationId}'", operation.Id);
+                _operationJournalFolders.TryRemove(nodeAction.Id, out _);
+                _logger.LogInformation("Legacy NodeAction Journal finalized for ActionId '{ActionId}'", nodeAction.Id);
             }
             else
             {
-                _logger.LogWarning("Could not record legacy operation completion: Journal folder not found for OperationId '{OperationId}'", operation.Id);
+                _logger.LogWarning("Could not record legacy node action completion: Journal folder not found for ActionId '{ActionId}'", nodeAction.Id);
             }
         }
 
         /// <summary>
-        /// Records an intermediate change in the overall status of an ongoing general operation (legacy or internal).
+        /// Records an intermediate change in the overall status of an ongoing general node action (legacy or internal).
         /// </summary>
-        /// <param name="operation">The <see cref="Operation"/> object with its updated status.</param>
+        /// <param name="nodeAction">The <see cref="NodeAction"/> object with its updated status.</param>
         /// <returns>A task representing the asynchronous operation.</returns>
-        public async Task RecordOperationStatusChangedAsync(Operation operation)
+        public async Task RecordOperationStatusChangedAsync(NodeAction nodeAction)
         {
-            if (_operationJournalFolders.TryGetValue(operation.Id, out var opFolderPath))
+            if (_operationJournalFolders.TryGetValue(nodeAction.Id, out var opFolderPath))
             {
                 var infoPath = Path.Combine(opFolderPath, "info.json");
-                await WriteJsonAsync(infoPath, operation);
+                await WriteJsonAsync(infoPath, nodeAction);
             }
         }
         
         /// <summary>
-        /// Records the final result of an individual node task for a general operation (legacy or internal).
+        /// Records the final result of an individual node task for a general node action (legacy or internal).
         /// </summary>
         /// <param name="task">The <see cref="NodeTask"/> object in its terminal state, containing the result payload.</param>
         /// <returns>A task representing the asynchronous operation.</returns>
-        public async Task RecordNodeTaskStatusChangedAsync(NodeTask task) // This name is a bit misleading if it only records result
+        public async Task RecordNodeTaskStatusChangedAsync(NodeTask task)
         {
             if (task.Status.IsTerminal() && task.ResultPayload != null)
             {
-                if (_operationJournalFolders.TryGetValue(task.OperationId, out var opFolderPath))
+                if (_operationJournalFolders.TryGetValue(task.ActionId, out var opFolderPath)) // task.OperationId to task.ActionId
                 {
                     var resultFileName = $"{SanitizeFileName(task.NodeName)}-{SanitizeFileName(task.TaskId)}-result.json";
                     var resultPath = Path.Combine(opFolderPath, "results", resultFileName);
@@ -199,15 +199,16 @@ namespace SiteKeeper.Master.Services
         }
 
         /// <summary>
-        /// Appends a single log entry from a slave to the appropriate per-task log file for a general operation (legacy or internal).
+        /// Appends a single log entry from a slave to the appropriate per-task log file for a general node action (legacy or internal).
         /// </summary>
         /// <param name="logEntry">The <see cref="SlaveTaskLogEntry"/> DTO received from the slave.</param>
         /// <returns>A task representing the asynchronous operation.</returns>
-        public async Task AppendToNodeTaskLogAsync(SlaveTaskLogEntry logEntry) // This name is generic, context implies legacy operation
+        public async Task AppendToNodeTaskLogAsync(SlaveTaskLogEntry logEntry)
         {
-            if (!_operationJournalFolders.TryGetValue(logEntry.OperationId, out var opFolderPath))
+            // SlaveTaskLogEntry DTO now uses ActionId.
+            if (!_operationJournalFolders.TryGetValue(logEntry.ActionId, out var opFolderPath)) // logEntry.OperationId -> logEntry.ActionId
             {
-                _logger.LogWarning("Could not append to legacy task log: Journal folder not found for OperationId '{OperationId}'", logEntry.OperationId);
+                _logger.LogWarning("Could not append to legacy task log: Journal folder not found for ActionId '{ActionId}'", logEntry.ActionId); // logEntry.OperationId -> logEntry.ActionId
                 return;
             }
 
@@ -223,21 +224,20 @@ namespace SiteKeeper.Master.Services
         #region Placeholder/Logging-Only Methods (Review if these should interact with Action/Change Journals)
         
         /// <summary>
-        /// Logs an informational event that an operation cancellation was requested.
+        /// Logs an informational event that a node action cancellation was requested.
         /// The actual state changes reflecting cancellation are recorded via <see cref="RecordMasterActionCompletedAsync"/> or <see cref="FinalizeStateChangeAsync"/>.
         /// </summary>
-        /// <param name="operation">The <see cref="Operation"/> for which cancellation was requested.</param>
+        /// <param name="nodeAction">The <see cref="NodeAction"/> for which cancellation was requested.</param>
         /// <param name="cancelledBy">Identifier for who requested the cancellation.</param>
         /// <returns>A task representing the asynchronous logging operation.</returns>
-        public Task RecordOperationCancellationRequestedAsync(Operation operation, string cancelledBy)
+        public Task RecordOperationCancellationRequestedAsync(NodeAction nodeAction, string cancelledBy)
         {
-             _logger.LogInformation("Journal Event: Operation Cancellation Requested. ID: {OperationId}, By: {CancelledBy}", operation.Id, cancelledBy);
-            // This might translate to updating the MasterAction's status to Cancelling if part of that flow.
+             _logger.LogInformation("Journal Event: NodeAction Cancellation Requested. ID: {ActionId}, By: {CancelledBy}", nodeAction.Id, cancelledBy);
             return Task.CompletedTask;
         }
 
         /// <summary>
-        /// Logs the creation of a <see cref="NodeTask"/> within an operation.
+        /// Logs the creation of a <see cref="NodeTask"/> within a NodeAction.
         /// Detailed status, logs, and results for the NodeTask are recorded via other specific methods
         /// (e.g., <see cref="AppendToStageLogAsync"/>, <see cref="RecordNodeTaskResultAsync"/> within the Action Journal).
         /// </summary>
@@ -245,8 +245,8 @@ namespace SiteKeeper.Master.Services
         /// <returns>A task representing the asynchronous logging operation.</returns>
         public Task RecordNodeTaskCreatedAsync(NodeTask task)
         {
-            _logger.LogInformation("Journal Event: Node Task Created. TaskID: {TaskId}, OperationID: {OperationId}, Node: {NodeName}, Type: {TaskType}",
-                task.TaskId, task.OperationId, task.NodeName, task.Type);
+            _logger.LogInformation("Journal Event: Node Task Created. TaskID: {TaskId}, ActionID: {ActionId}, Node: {NodeName}, Type: {TaskType}",
+                task.TaskId, task.ActionId, task.NodeName, task.Type);
             return Task.CompletedTask;
         }
 

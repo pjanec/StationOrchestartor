@@ -13,11 +13,11 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
     /// This handler is responsible for verifying the integrity and configuration of the entire managed environment.
     /// It achieves this by preparing and executing a multi-node operation that dispatches
     /// <see cref="SlaveTaskType.VerifyConfiguration"/> tasks to all relevant slave agents.
-    /// The <see cref="MultiNodeOperationStageHandler"/> is used to manage the execution of these distributed tasks.
+    /// The <see cref="NodeCoordinator"/> is used to manage the execution of these distributed tasks.
     /// </remarks>
     public class EnvVerifyActionHandler : IMasterActionHandler
     {
-        private readonly IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> _multiNodeHandler;
+        private readonly INodeCoordinator<NodeActionResult> _multiNodeHandler;
         private readonly IAgentConnectionManagerService _agentConnectionManager;
 
         /// <summary>
@@ -28,12 +28,12 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
         /// <summary>
         /// Initializes a new instance of the <see cref="EnvVerifyActionHandler"/> class.
         /// </summary>
-        /// <param name="multiNodeHandler">The stage handler responsible for executing operations across multiple nodes.
+        /// <param name="multiNodeHandler">The <see cref="INodeCoordinator{TOutput}"/> responsible for executing node actions across multiple nodes.
         /// This is used to run the <see cref="SlaveTaskType.VerifyConfiguration"/> tasks on agents.</param>
         /// <param name="agentConnectionManager">The service used to retrieve information about connected agents,
         /// necessary for determining the target nodes for the verification tasks.</param>
         public EnvVerifyActionHandler(
-            IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> multiNodeHandler,
+            INodeCoordinator<NodeActionResult> multiNodeHandler,
             IAgentConnectionManagerService agentConnectionManager)
         {
             _multiNodeHandler = multiNodeHandler;
@@ -51,11 +51,10 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
         ///   <item><description>Initializes progress tracking for a single main stage.</description></item>
         ///   <item><description>Logs the start of the workflow.</description></item>
         ///   <item><description>Begins a "Verification" stage within the <paramref name="context"/>.</description></item>
-        ///   <item><description>Uses <see cref="OperationBuilder.CreateOperationForAllNodesAsync"/> to construct an <see cref="Operation"/> object. This operation includes <see cref="NodeTask"/>s of type <see cref="SlaveTaskType.VerifyConfiguration"/> targeted at all relevant/connected nodes.</description></item>
-        ///   <item><description>Wraps the created operation in a <see cref="MultiNodeOperationInput"/>.</description></item>
-        ///   <item><description>Executes the multi-node verification operation using the injected <see cref="_multiNodeHandler"/>.</description></item>
-        ///   <item><description>Stores the final state of the multi-node operation in <see cref="MasterAction.CurrentStageOperation"/> for status reporting.</description></item>
-        ///   <item><description>If the multi-node operation stage fails, an exception is thrown to mark the workflow as failed.</description></item>
+        ///   <item><description>Uses <see cref="NodeActionBuilder.CreateActionForAllNodesAsync"/> to construct a <see cref="NodeAction"/> object. This action includes <see cref="NodeTask"/>s of type <see cref="SlaveTaskType.VerifyConfiguration"/> targeted at all relevant/connected nodes.</description></item>
+        ///   <item><description>Executes the multi-node verification action using the injected <see cref="_multiNodeHandler"/> by directly passing the <see cref="NodeAction"/> object.</description></item>
+        ///   <item><description>Stores the final state of the multi-node action in <see cref="MasterAction.CurrentStageOperation"/> for status reporting.</description></item>
+        ///   <item><description>If the multi-node action stage fails, an exception is thrown to mark the workflow as failed.</description></item>
         ///   <item><description>Sets the final outcome (completed or failed) on the <paramref name="context"/>.</description></item>
         /// </list>
         /// The handler respects cancellation requests via <paramref name="context"/>.CancellationToken, which is passed to the <see cref="_multiNodeHandler"/>.
@@ -69,8 +68,8 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
             {
                 await context.BeginStageAsync("Verification", new { Description = "Dispatching VerifyConfiguration tasks to all nodes." });
 
-                // Create an Operation object that defines VerifyConfiguration tasks for all relevant nodes.
-                var operationToRun = await OperationBuilder.CreateOperationForAllNodesAsync(
+                // Create a NodeAction object that defines VerifyConfiguration tasks for all relevant nodes.
+                var operationToRun = await NodeActionBuilder.CreateActionForAllNodesAsync( // operationToRun is now NodeAction
                     context: context, // Pass parent context for ID, parameters
                     agentConnectionManager: _agentConnectionManager, // To get list of nodes
                     operationType: OperationType.EnvVerify, // The type of the parent operation
@@ -79,10 +78,10 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
                     // TaskPayload can be added here if VerifyConfiguration tasks need specific input
                 );
 
-                var input = new MultiNodeOperationInput { OperationToExecute = operationToRun };
-                var result = await _multiNodeHandler.ExecuteAsync(input, context, context.StageProgress, context.CancellationToken);
+                // Directly pass operationToRun to the ExecuteAsync method
+                var result = await _multiNodeHandler.ExecuteAsync(operationToRun, context, context.StageProgress, context.CancellationToken);
 
-                context.MasterAction.CurrentStageOperation = result.FinalOperationState; // Store detailed outcome
+                context.MasterAction.CurrentStageOperation = result.FinalActionState; // Was result.FinalOperationState
                 if (!result.IsSuccess)
                 {
                     throw new System.Exception("Environment verification stage failed. Check individual node task statuses for details.");

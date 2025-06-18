@@ -110,10 +110,10 @@ namespace SiteKeeper.IntegrationTests
 
             // 3. Check stage results for the slave's result payload
             var stageResultPath = Path.Combine(actionJournalDir, "stages", "1-MultiNodeTestStage", "results", "stage_result.json");
-            var stageResult = await ReadJournalJsonFile<MultiNodeOperationResult>(stageResultPath);
+            var stageResult = await ReadJournalJsonFile<NodeActionResult>(stageResultPath);
             Assert.NotNull(stageResult);
             Assert.True(stageResult.IsSuccess);
-            Assert.NotNull(stageResult.FinalOperationState.NodeTasks.First().ResultPayload);
+            Assert.NotNull(stageResult.FinalActionState.NodeTasks.First().ResultPayload);
 
 
             // ASSERT - Change Journal (High-Level Audit)
@@ -315,7 +315,7 @@ namespace SiteKeeper.IntegrationTests
             };
 
             // ACT
-            // The MultiNodeOperationStageHandler has an internal 30-second timeout for readiness.
+            // The NodeCoordinator has an internal 30-second timeout for readiness.
             var finalStatus = await RunTestOperation(request, 45);
 
             // ASSERT

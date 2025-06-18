@@ -95,8 +95,8 @@ namespace SiteKeeper.Master.Abstractions.Services
         /// Sends a command to a specific slave agent instructing it to flush its buffered log queue.
         /// </summary>
         /// <param name="nodeName">The name of the target slave node.</param>
-        /// <param name="operationId">The ID of the operation associated with the logs to be flushed.</param>
-        Task RequestLogFlushForTask(string nodeName, string operationId);
+        /// <param name="actionId">The ID of the node action associated with the logs to be flushed.</param>
+        Task RequestLogFlushForTask(string nodeName, string actionId);
 
 
         // Methods for processing messages from agents (called by the AgentHub)

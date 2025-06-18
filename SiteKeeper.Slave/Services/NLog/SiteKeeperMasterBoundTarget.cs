@@ -120,8 +120,8 @@ namespace SiteKeeper.Slave.Services.NLog2
                 return; // Can't send if not connected.
             }
 
-            // A log event is only relevant for remote logging if it has the OperationId.
-            if (!logEvent.Properties.TryGetValue("SK-OperationId", out var opIdObj) || opIdObj is not string opId || string.IsNullOrEmpty(opId))
+            // A log event is only relevant for remote logging if it has the ActionId (formerly OperationId).
+            if (!logEvent.Properties.TryGetValue("SK-ActionId", out var actionIdObj) || actionIdObj is not string actionId || string.IsNullOrEmpty(actionId)) // SK-OperationId -> SK-ActionId, opIdObj -> actionIdObj, opId -> actionId
             {
                 return;
             }
@@ -134,7 +134,7 @@ namespace SiteKeeper.Slave.Services.NLog2
             {
                 var entry = new SlaveTaskLogEntry
                 {
-                    OperationId = opId,
+                    ActionId = actionId, // OperationId -> ActionId, opId -> actionId
                     TaskId = taskIdObj as string ?? string.Empty,
                     NodeName = nodeNameObj as string ?? string.Empty,
                     LogLevel = MapNLogLevelToSiteKeeperLevel(logEvent.Level),
@@ -144,7 +144,7 @@ namespace SiteKeeper.Slave.Services.NLog2
 
                 // The rest of this method can remain the same...
                 var logger = LogManager.GetCurrentClassLogger();
-                logger.Log(NLog.LogLevel.Debug, "Attempting to send SlaveTaskLogEntry to master. OpId: {0}, TaskId: {1}, Message: '{2}'", entry.OperationId, entry.TaskId, entry.LogMessage);
+                logger.Log(NLog.LogLevel.Debug, "Attempting to send SlaveTaskLogEntry to master. ActionId: {0}, TaskId: {1}, Message: '{2}'", entry.ActionId, entry.TaskId, entry.LogMessage); // OpId -> ActionId, entry.OperationId -> entry.ActionId
 
                 await hubConnection.InvokeAsync("ReportSlaveTaskLogAsync", entry);
         

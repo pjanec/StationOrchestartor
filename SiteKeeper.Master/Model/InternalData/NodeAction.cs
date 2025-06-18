@@ -24,10 +24,10 @@ namespace SiteKeeper.Master.Model.InternalData
     /// - Concurrency control mechanisms (e.g., a way to ensure only one conflicting operation runs).
     /// - Progress tracking.
     /// </remarks>
-    public class Operation
+    public class NodeAction
     {
         /// <summary>
-        /// Unique identifier for the operation.
+        /// Unique identifier for the node action.
         /// </summary>
         /// <example>"op-envupdate-abc123xyz"</example>
         [Required]
@@ -116,14 +116,14 @@ namespace SiteKeeper.Master.Model.InternalData
         public string? ResultPayload { get; set; }
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="Operation"/> class.
+        /// Initializes a new instance of the <see cref="NodeAction"/> class.
         /// </summary>
-        /// <param name="id">The unique identifier for the operation.</param>
-        /// <param name="type">The type of operation.</param>
-        /// <param name="name">Optional user-friendly name for the operation.</param>
-        /// <param name="auditContext">Parameters for the operation.</param>
+        /// <param name="id">The unique identifier for the node action.</param>
+        /// <param name="type">The type of operation (soon to be action type).</param>
+        /// <param name="name">Optional user-friendly name for the node action.</param>
+        /// <param name="auditContext">Parameters for the node action.</param>
         /// <param name="initiatedBy">Identifier of the initiator.</param>
-        public Operation(string id, OperationType type, string? name = null, IReadOnlyDictionary<string, object>? auditContext = null, string? initiatedBy = null)
+        public NodeAction(string id, OperationType type, string? name = null, IReadOnlyDictionary<string, object>? auditContext = null, string? initiatedBy = null)
         {
             Id = !string.IsNullOrWhiteSpace(id) ? id : throw new ArgumentNullException(nameof(id));
             Type = type;

@@ -37,7 +37,6 @@ using NLog.Fluent;
 using OperatingSystem = System.OperatingSystem;
 using Scrutor;
 using SiteKeeper.Master.Abstractions.Workflow;
-using SiteKeeper.Master.Workflow.StageHandlers;
 
 namespace SiteKeeper.ConsoleHost
 {
@@ -135,7 +134,7 @@ namespace SiteKeeper.ConsoleHost
         ///     Configures Kestrel for dual ports (GUI and Agent) as specified in <see cref="MasterConfig"/>, including HTTPS setup
         ///     with server certificate loading and optional client certificate validation for the Agent port.
         ///     Registers Master services for Dependency Injection: core services (Journal, GUI Notifier, Agent Connection Manager, Node Health Monitor),
-        ///     placeholder services for various interfaces, <see cref="MasterNLogSetupService"/>, <see cref="MultiNodeOperationStageHandler"/>,
+        ///     placeholder services for various interfaces, <see cref="MasterNLogSetupService"/>, <see cref="NodeCoordinator"/>,
         ///     <see cref="IMasterActionCoordinatorService"/> (with <see cref="MasterActionCoordinatorService"/>), and scans for <see cref="IMasterActionHandler"/> implementations.
         ///     Configures SignalR with JSON enum conversion.
         ///     Configures Swagger/OpenAPI for API documentation.
@@ -315,14 +314,14 @@ namespace SiteKeeper.ConsoleHost
                 // Register the specialized stage handler for multi-node operations.
                 // 1. Register the concrete class as a singleton. This is required by AgentHub, which injects
                 //    the concrete type to access its public methods not defined on the interface.
-                builder.Services.AddSingleton<MultiNodeOperationStageHandler>();
+                builder.Services.AddSingleton<SiteKeeper.Master.Services.NodeCoordinator>();
                 
-                // 2. Register the IStageHandler interface to resolve to the same singleton instance.
+                // 2. Register the INodeCoordinator interface to resolve to the same singleton instance.
                 //    This ensures that any service asking for the interface (like our action handlers)
                 //    and any service asking for the concrete class get the *exact same instance*,
                 //    preserving its state (e.g., the _activeOperations dictionary).
-                builder.Services.AddSingleton<IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult>>(sp =>
-                    sp.GetRequiredService<MultiNodeOperationStageHandler>());
+                builder.Services.AddSingleton<SiteKeeper.Master.Abstractions.Workflow.INodeCoordinator<SiteKeeper.Master.Abstractions.Workflow.NodeActionResult>>(sp =>
+                    sp.GetRequiredService<SiteKeeper.Master.Services.NodeCoordinator>());
                 
                 builder.Services.AddSingleton<IJournalService, JournalService>();
                 builder.Services.AddSingleton<IGuiNotifierService, GuiNotifierService>();

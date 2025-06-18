@@ -18,15 +18,15 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
     /// <remarks>
     /// It reads specific test parameters from the <see cref="MasterActionContext.Parameters"/>, such as
     /// desired slave behavior (<see cref="SlaveBehaviorMode"/>) and master failure simulation points (<see cref="MasterFailureMode"/>).
-    /// It then constructs and executes a single-node operation using the <see cref="MultiNodeOperationStageHandler"/>,
+    /// It then constructs and executes a single-node operation using the <see cref="NodeCoordinator"/>,
     /// where the <see cref="SlaveTaskType.TestOrchestration"/> task on the slave agent will enact the requested simulated behavior.
     /// The handler also interacts with the <see cref="IJournalService"/> to record the test operation's lifecycle in the Change Journal.
     /// This handler is critical for verifying the robustness of the operation coordination, error handling, cancellation, and timeout mechanisms.
     /// </remarks>
     public class OrchestrationTestActionHandler : IMasterActionHandler
     {
-        private readonly IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> _multiNodeHandler;
-        private readonly IAgentConnectionManagerService _agentConnectionManager; // Kept for consistency, though OperationBuilder might be primary user now
+        private readonly INodeCoordinator<NodeActionResult> _multiNodeHandler;
+        private readonly IAgentConnectionManagerService _agentConnectionManager; // Kept for consistency, though NodeActionBuilder might be primary user now
         private readonly IJournalService _journalService;
 
         /// <summary>
@@ -38,15 +38,15 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
         /// Initializes a new instance of the <see cref="OrchestrationTestActionHandler"/> class.
         /// </summary>
         /// <param name="multiNodeHandler">The stage handler for executing multi-node operations, used here for the single test task.</param>
-        /// <param name="agentConnectionManager">Service for agent communication details (though less directly used if OperationBuilder handles node selection).</param>
+        /// <param name="agentConnectionManager">Service for agent communication details (though less directly used if NodeActionBuilder handles node selection).</param>
         /// <param name="journalService">Service for recording system change events related to the test operation.</param>
         public OrchestrationTestActionHandler(
-            IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> multiNodeHandler,
+            INodeCoordinator<NodeActionResult> multiNodeHandler,
             IAgentConnectionManagerService agentConnectionManager,
             IJournalService journalService)
         {
             _multiNodeHandler = multiNodeHandler;
-            _agentConnectionManager = agentConnectionManager; // May not be directly used if OperationBuilder handles node discovery
+            _agentConnectionManager = agentConnectionManager; // May not be directly used if NodeActionBuilder handles node discovery
             _journalService = journalService;
         }
 
@@ -64,13 +64,13 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
         ///   <item><description>Initiates a <see cref="ChangeEventType.SystemEvent"/> record in the Change Journal for the test.</description></item>
         ///   <item><description>Executes a "MultiNodeTestStage":
         ///     <list type="bullet">
-        ///       <item><description>Constructs an <see cref="Operation"/> with a single <see cref="NodeTask"/> of type <see cref="SlaveTaskType.TestOrchestration"/>, targeted at the specified <c>targetNodeName</c>.</description></item>
+        ///       <item><description>Constructs a <see cref="NodeAction"/> with a single <see cref="NodeTask"/> of type <see cref="SlaveTaskType.TestOrchestration"/>, targeted at the specified <c>targetNodeName</c>.</description></item>
         ///       <item><description>The <see cref="NodeTask.TaskPayload"/> includes all original test parameters for the slave to interpret.</description></item>
-        ///       <item><description>Invokes the injected <see cref="_multiNodeHandler"/> to execute this operation.</description></item>
+        ///       <item><description>Invokes the injected <see cref="_multiNodeHandler"/> to execute this action by directly passing the <see cref="NodeAction"/> object.</description></item>
         ///     </list>
         ///   </description></item>
         ///   <item><description>Simulates master failure after the main stage if <see cref="MasterFailureMode.ThrowAfterFirstStage"/> is requested.</description></item>
-        ///   <item><description>Based on the <see cref="MultiNodeOperationResult"/>, sets the final outcome (Succeeded, Failed, Cancelled) on the <paramref name="context"/>.</description></item>
+        ///   <item><description>Based on the <see cref="NodeActionResult"/>, sets the final outcome (Succeeded, Failed, Cancelled) on the <paramref name="context"/>.</description></item>
         ///   <item><description>Finalizes the Change Journal record with the test outcome.</description></item>
         /// </list>
         /// Exceptions during the workflow are caught to ensure the Change Journal record is finalized with a failure state, then re-thrown.
@@ -144,26 +144,26 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
                 // --- 4. Execute the Multi-Node Stage ---
                 await context.BeginStageAsync("MultiNodeTestStage");
 
-                var operationToRun = new Operation(
-                    id: $"op-test-{Guid.NewGuid():N}",
+                var operationToRun = new NodeAction( // Renamed from Operation
+                    id: $"na-test-{Guid.NewGuid():N}", // op- prefix changed to na-
                     type: OperationType.OrchestrationTest,
                     name: "Orchestration Test Stage",
                     initiatedBy: context.MasterAction.InitiatedBy);
 
                 var taskPayload = new Dictionary<string, object>(context.Parameters);
-                var nodeTask = new NodeTask(
+                var nodeTask = new NodeTask( // NodeTask constructor now takes actionId
                     taskId: $"{operationToRun.Id}-{targetNodeName}",
-                    operationId: operationToRun.Id,
+                    actionId: operationToRun.Id, // Pass actionId
                     nodeName: targetNodeName,
                     taskType: SlaveTaskType.TestOrchestration,
                     taskPayload: taskPayload
                 );
                 operationToRun.NodeTasks.Add(nodeTask);
 
-                var multiNodeInput = new MultiNodeOperationInput { OperationToExecute = operationToRun };
-                var multiNodeResult = await _multiNodeHandler.ExecuteAsync(multiNodeInput, context, context.StageProgress, context.CancellationToken);
+                // Directly pass operationToRun to the ExecuteAsync method
+                var multiNodeResult = await _multiNodeHandler.ExecuteAsync(operationToRun, context, context.StageProgress, context.CancellationToken);
 
-                context.MasterAction.CurrentStageOperation = multiNodeResult.FinalOperationState;
+                context.MasterAction.CurrentStageOperation = multiNodeResult.FinalActionState; // Renamed from FinalOperationState
                 await context.CompleteStageAsync(multiNodeResult);
 
                 // --- 5. Simulate Master Failure (After first stage) ---
@@ -177,21 +177,21 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
                 await context.BeginStageAsync("Finalization");
                 if (multiNodeResult.IsSuccess)
                 {
-                    context.SetFinalResult(multiNodeResult.FinalOperationState.NodeTasks.FirstOrDefault()?.ResultPayload);
+                    context.SetFinalResult(multiNodeResult.FinalActionState.NodeTasks.FirstOrDefault()?.ResultPayload); // Renamed from FinalOperationState
                     context.SetCompleted("Orchestration Test completed successfully.");
                     await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Success, Description = "Test Succeeded", ResultArtifact = multiNodeResult });
                 }
                 // Add a specific check for the Cancelled status
-                else if (multiNodeResult.FinalOperationState.OverallStatus == OperationOverallStatus.Cancelled)
+                else if (multiNodeResult.FinalActionState.OverallStatus == OperationOverallStatus.Cancelled) // Renamed from FinalOperationState
                 {
-                    var cancelMessage = multiNodeResult.FinalOperationState.NodeTasks.FirstOrDefault(t => t.Status == NodeTaskStatus.Cancelled)?.StatusMessage ?? "Multi-node test stage was cancelled.";
+                    var cancelMessage = multiNodeResult.FinalActionState.NodeTasks.FirstOrDefault(t => t.Status == NodeTaskStatus.Cancelled)?.StatusMessage ?? "Multi-node test stage was cancelled."; // Renamed from FinalOperationState
                     // Use the SetCancelled method on the context
                     context.SetCancelled($"Orchestration Test was cancelled: {cancelMessage}");
                     await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Cancelled, Description = "Test Cancelled", ResultArtifact = multiNodeResult });
                 }
                 else  // Everything else is a failure
                 {
-                    var failureMessage = multiNodeResult.FinalOperationState.NodeTasks.FirstOrDefault()?.StatusMessage ?? "Multi-node test stage failed.";
+                    var failureMessage = multiNodeResult.FinalActionState.NodeTasks.FirstOrDefault()?.StatusMessage ?? "Multi-node test stage failed."; // Renamed from FinalOperationState
                     context.SetFailed($"Orchestration Test failed: {failureMessage}");
                     await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Failure, Description = "Test Failed", ResultArtifact = multiNodeResult });
                 }

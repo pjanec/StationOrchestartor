@@ -63,7 +63,7 @@ namespace SiteKeeper.Slave
         private PerformanceCounter? _memoryCounter;
         private ulong _totalMemoryBytes = 0;
 
-        private const string LogMdlcOperationId = "SK-OperationId";
+        private const string LogMdlcActionId = "SK-ActionId"; // Renamed from LogMdlcOperationId
         private const string LogMdlcTaskId = "SK-TaskId";
         private const string LogMdlcNodeName = "SK-NodeName";
 
@@ -393,7 +393,7 @@ namespace SiteKeeper.Slave
 
             _masterConnection.On<PrepareForTaskInstruction>("ReceivePrepareForTaskInstructionAsync", async (instruction) =>
             {
-                await HandleSignalRInvokeAsync(instruction.OperationId, instruction.TaskId, async () =>
+                await HandleSignalRInvokeAsync(instruction.ActionId, instruction.TaskId, async () => // instruction.OperationId -> instruction.ActionId
                 {
                     await _operationHandler.HandlePrepareForTaskAsync(instruction);
                 });
@@ -401,7 +401,7 @@ namespace SiteKeeper.Slave
 
             _masterConnection.On<SlaveTaskInstruction>("ReceiveSlaveTaskAsync", async (instruction) =>
             {
-                await HandleSignalRInvokeAsync(instruction.OperationId, instruction.TaskId, async () =>
+                await HandleSignalRInvokeAsync(instruction.ActionId, instruction.TaskId, async () => // instruction.OperationId -> instruction.ActionId
                 {
                     await _operationHandler.HandleSlaveTaskAsync(instruction, _activeSlaveTasks, _concurrentTaskSemaphore);
                 });
@@ -409,9 +409,9 @@ namespace SiteKeeper.Slave
 
             _masterConnection.On<CancelTaskOnAgentRequest>("ReceiveCancelTaskRequestAsync", async (request) =>
             {
-                await HandleSignalRInvokeAsync(request.OperationId, request.TaskId, async () =>
+                await HandleSignalRInvokeAsync(request.ActionId, request.TaskId, async () => // request.OperationId -> request.ActionId
                 {
-                    await _operationHandler.HandleTaskCancelRequestAsync(request.OperationId, request.TaskId, _activeSlaveTasks);
+                    await _operationHandler.HandleTaskCancelRequestAsync(request.ActionId, request.TaskId, _activeSlaveTasks); // request.OperationId -> request.ActionId (in params)
                 });
             });
 
@@ -425,18 +425,18 @@ namespace SiteKeeper.Slave
             });
 
 
-            _masterConnection.On<string>("RequestLogFlushForTask", async (operationId) =>
+            _masterConnection.On<string>("RequestLogFlushForTask", async (operationId) => // operationId parameter here receives NodeAction.Id
             {
                 await HandleSignalRInvokeAsync(operationId, null, async () =>
                 {
-                    _logger.LogInformation("Received log flush request from master for OperationId: {OperationId}", operationId);
+                    _logger.LogInformation("Received log flush request from master for ActionId: {ActionId}", operationId); // OperationId -> ActionId
  
                     var masterLoggingTarget = NLog.LogManager.Configuration?.FindTargetByName<SiteKeeperMasterBoundTarget>("masterBoundTarget");
                     
                      if (masterLoggingTarget != null)
                     {
                         await masterLoggingTarget.FlushAsync();
-                        _logger.LogInformation("Log flush completed for OperationId: {OperationId}", operationId);
+                        _logger.LogInformation("Log flush completed for ActionId: {ActionId}", operationId); // OperationId -> ActionId
                     }
                     else
                     {
@@ -446,7 +446,7 @@ namespace SiteKeeper.Slave
                     if (_masterConnection != null)
                     {
                         await _masterConnection.InvokeAsync("ConfirmLogFlushForTask", operationId, _config.AgentName, cancellationToken);
-                        _logger.LogInformation("Confirmed log flush to master for OperationId: {OperationId}", operationId);
+                        _logger.LogInformation("Confirmed log flush to master for ActionId: {ActionId}", operationId); // OperationId -> ActionId
                     }
                 });
             });
@@ -655,7 +655,7 @@ namespace SiteKeeper.Slave
         /// <param name="taskUpdateDto">The <see cref="SlaveTaskProgressUpdate"/> DTO containing details about the task's progress, status, result, etc.</param>
         /// <remarks>
         /// Before invoking the master's <c>ReportOngoingTaskProgressAsync</c> hub method, this method sets
-        /// NLog MDLC properties (<see cref="LogMdlcOperationId"/>, <see cref="LogMdlcTaskId"/>) based on the
+        /// NLog MDLC properties (<see cref="LogMdlcActionId"/>, <see cref="LogMdlcTaskId"/>) based on the // Updated comment
         /// <paramref name="taskUpdateDto"/> to ensure contextual logging for the send operation. These MDLC properties are cleared afterwards.
         /// If the service is stopping, the send operation may be cancelled.
         /// </remarks>
@@ -665,10 +665,10 @@ namespace SiteKeeper.Slave
             {
                 try
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcOperationId, taskUpdateDto.OperationId);
+                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcActionId, taskUpdateDto.ActionId); // LogMdlcOperationId -> LogMdlcActionId, taskUpdateDto.OperationId -> taskUpdateDto.ActionId
                     NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcTaskId, taskUpdateDto.TaskId);
                     await _masterConnection.InvokeAsync("ReportOngoingTaskProgressAsync", taskUpdateDto, _stoppingCts?.Token ?? CancellationToken.None);
-                    _logger.LogDebug($"Sent task progress update for OpId: {taskUpdateDto.OperationId}, TaskId: {taskUpdateDto.TaskId}, Status: {taskUpdateDto.Status}.");
+                    _logger.LogDebug($"Sent task progress update for ActionId: {taskUpdateDto.ActionId}, TaskId: {taskUpdateDto.TaskId}, Status: {taskUpdateDto.Status}.");
                 }
                 catch (OperationCanceledException) when (_stoppingCts?.IsCancellationRequested ?? false)
                 {
@@ -676,17 +676,17 @@ namespace SiteKeeper.Slave
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send task progress update for OpId: {taskUpdateDto.OperationId}, TaskId: {taskUpdateDto.TaskId}.");
+                    _logger.LogError(ex, $"Failed to send task progress update for ActionId: {taskUpdateDto.ActionId}, TaskId: {taskUpdateDto.TaskId}.");
                 }
                 finally
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcOperationId);
+                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcActionId); // LogMdlcOperationId -> LogMdlcActionId
                     NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcTaskId);
                 }
             }
             else
             {
-                _logger.LogWarning($"Cannot send task progress update for OpId: {taskUpdateDto.OperationId}, TaskId: {taskUpdateDto.TaskId}. No active connection to Master.");
+                _logger.LogWarning($"Cannot send task progress update for ActionId: {taskUpdateDto.ActionId}, TaskId: {taskUpdateDto.TaskId}. No active connection to Master.");
             }
         }
 
@@ -697,7 +697,7 @@ namespace SiteKeeper.Slave
         /// <param name="readinessReportDto">The <see cref="SlaveTaskReadinessReport"/> DTO indicating whether the slave is ready to execute a specific task.</param>
         /// <remarks>
         /// Before invoking the master's <c>ReportSlaveTaskReadinessAsync</c> hub method, this method sets
-        /// NLog MDLC properties (<see cref="LogMdlcOperationId"/>, <see cref="LogMdlcTaskId"/>) based on the
+        /// NLog MDLC properties (<see cref="LogMdlcActionId"/>, <see cref="LogMdlcTaskId"/>) based on the // Updated comment
         /// <paramref name="readinessReportDto"/> for contextual logging. These MDLC properties are cleared afterwards.
         /// If the service is stopping, the send operation may be cancelled.
         /// </remarks>
@@ -707,10 +707,10 @@ namespace SiteKeeper.Slave
             {
                 try
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcOperationId, readinessReportDto.OperationId);
+                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcActionId, readinessReportDto.ActionId); // LogMdlcOperationId -> LogMdlcActionId, readinessReportDto.OperationId -> readinessReportDto.ActionId
                     NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcTaskId, readinessReportDto.TaskId);
                     await _masterConnection.InvokeAsync("ReportSlaveTaskReadinessAsync", readinessReportDto, _stoppingCts?.Token ?? CancellationToken.None);
-                    _logger.LogInformation($"Successfully sent readiness report for OpId: {readinessReportDto.OperationId}, TaskId: {readinessReportDto.TaskId}, Node: '{readinessReportDto.NodeName}', IsReady: {readinessReportDto.IsReady}.");
+                    _logger.LogInformation($"Successfully sent readiness report for ActionId: {readinessReportDto.ActionId}, TaskId: {readinessReportDto.TaskId}, Node: '{readinessReportDto.NodeName}', IsReady: {readinessReportDto.IsReady}.");
                 }
                 catch (OperationCanceledException) when (_stoppingCts?.IsCancellationRequested ?? false)
                 {
@@ -718,17 +718,17 @@ namespace SiteKeeper.Slave
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send readiness report for OpId: {readinessReportDto.OperationId}, TaskId: {readinessReportDto.TaskId}. Error: {ex.Message}");
+                    _logger.LogError(ex, $"Failed to send readiness report for ActionId: {readinessReportDto.ActionId}, TaskId: {readinessReportDto.TaskId}. Error: {ex.Message}");
                 }
                  finally
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcOperationId);
+                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcActionId); // LogMdlcOperationId -> LogMdlcActionId
                     NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcTaskId);
                 }
             }
             else
             {
-                _logger.LogWarning($"Cannot send readiness report for OpId: {readinessReportDto.OperationId}, TaskId: {readinessReportDto.TaskId}. No active connection to Master.");
+                _logger.LogWarning($"Cannot send readiness report for ActionId: {readinessReportDto.ActionId}, TaskId: {readinessReportDto.TaskId}. No active connection to Master.");
             }
         }
 
@@ -736,11 +736,11 @@ namespace SiteKeeper.Slave
         /// Wraps the execution of SignalR client hub method handlers to provide consistent
         /// NLog MDLC (Mapped Diagnostics Logical Context) setup and error handling.
         /// </summary>
-        /// <param name="operationId">The operation ID associated with the incoming message, if any. Used to set <see cref="LogMdlcOperationId"/>.</param>
+        /// <param name="operationId">The action ID associated with the incoming message, if any. Used to set <see cref="LogMdlcActionId"/>.</param> // Updated comment
         /// <param name="taskId">The task ID associated with the incoming message, if any. Used to set <see cref="LogMdlcTaskId"/>.</param>
         /// <param name="handlerAction">The actual asynchronous action to perform for handling the SignalR message.</param>
         /// <remarks>
-        /// This method sets <see cref="LogMdlcOperationId"/> and <see cref="LogMdlcTaskId"/> in the NLog MDLC
+        /// This method sets <see cref="LogMdlcActionId"/> and <see cref="LogMdlcTaskId"/> in the NLog MDLC // Updated comment
         /// before executing <paramref name="handlerAction"/> and clears them in a finally block.
         /// This ensures that logs generated during the handler's execution are contextually tagged.
         /// It also provides centralized logging for the start, success, or failure of the handler action.
@@ -755,7 +755,7 @@ namespace SiteKeeper.Slave
             {
                 if (!string.IsNullOrEmpty(operationId))
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcOperationId, operationId);
+                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcActionId, operationId); // LogMdlcOperationId -> LogMdlcActionId
                     opIdSetInMdlc = true;
                 }
                 if (!string.IsNullOrEmpty(taskId))
@@ -764,21 +764,21 @@ namespace SiteKeeper.Slave
                     taskIdSetInMdlc = true;
                 }
 
-                _logger.LogDebug($"Handling master instruction. OpId: {operationId ?? "N/A"}, TaskId: {taskId ?? "N/A"}.");
+                _logger.LogDebug($"Handling master instruction. ActionId: {operationId ?? "N/A"}, TaskId: {taskId ?? "N/A"}.");
                 await handlerAction();
-                _logger.LogDebug($"Successfully handled master instruction. OpId: {operationId ?? "N/A"}, TaskId: {taskId ?? "N/A"}.");
+                _logger.LogDebug($"Successfully handled master instruction. ActionId: {operationId ?? "N/A"}, TaskId: {taskId ?? "N/A"}.");
             }
             catch (OperationCanceledException opEx) when (_stoppingCts?.IsCancellationRequested ?? false)
             {
-                 _logger.LogInformation(opEx, $"Handler for master instruction (OpId: {operationId ?? "N/A"}, TaskId: {taskId ?? "N/A"}) was canceled due to service stopping.");
+                 _logger.LogInformation(opEx, $"Handler for master instruction (ActionId: {operationId ?? "N/A"}, TaskId: {taskId ?? "N/A"}) was canceled due to service stopping.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error handling master instruction. OpId: {operationId ?? "N/A"}, TaskId: {taskId ?? "N/A"}.");
+                _logger.LogError(ex, $"Error handling master instruction. ActionId: {operationId ?? "N/A"}, TaskId: {taskId ?? "N/A"}.");
             }
             finally
             {
-                if (opIdSetInMdlc) NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcOperationId);
+                if (opIdSetInMdlc) NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcActionId); // LogMdlcOperationId -> LogMdlcActionId
                 if (taskIdSetInMdlc) NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcTaskId);
             }
         }

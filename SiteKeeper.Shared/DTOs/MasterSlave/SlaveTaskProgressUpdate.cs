@@ -12,11 +12,11 @@ namespace SiteKeeper.Shared.DTOs.MasterSlave
 	public class SlaveTaskProgressUpdate
 	{
 		/// <summary>
-		/// Unique identifier of the overall operation this task belongs to.
+		/// Unique identifier of the overall node action this task belongs to.
 		/// </summary>
 		[Required]
-		[JsonPropertyName( "operationId" )]
-		public string OperationId { get; set; } = string.Empty;
+		[JsonPropertyName( "actionId" )] // Changed from operationId
+		public string ActionId { get; set; } = string.Empty; // Renamed from OperationId
 
 		/// <summary>
 		/// The unique identifier for the specific task whose status is being reported.

@@ -24,7 +24,7 @@ namespace SiteKeeper.Slave.Services
     /// <remarks>
     /// This class is a key component in the slave agent's task management workflow.
     /// It ensures that task lifecycle events are processed correctly and reported appropriately.
-    /// Logging within this class uses NLog and is enriched with MDLC context (OperationId, TaskId, NodeName)
+    /// Logging within this class uses NLog and is enriched with MDLC context (ActionId, TaskId, NodeName) // OperationId -> ActionId
     /// which is expected to be set by the calling service (<see cref="SlaveAgentService"/>).
     /// </remarks>
     public class OperationHandler
@@ -63,11 +63,11 @@ namespace SiteKeeper.Slave.Services
         /// This method performs local readiness checks based on the <paramref name="prepareInstruction"/>.
         /// These checks are typically quick and might involve verifying disk space, current load, or other prerequisites.
         /// It then sends a <see cref="SlaveTaskReadinessReport"/> back to the master via the <see cref="_sendTaskReadinessReportCallback"/>.
-        /// MDLC context (OperationId, TaskId, NodeName) is expected to be set by the caller.
+        /// MDLC context (ActionId, TaskId, NodeName) is expected to be set by the caller. // OperationId -> ActionId
         /// </remarks>
         public async Task HandlePrepareForTaskAsync(PrepareForTaskInstruction prepareInstruction)
         {
-            _logger.Info($"Handling PrepareForTask: OpId '{prepareInstruction.OperationId}', TaskId '{prepareInstruction.TaskId}', ExpectedType '{prepareInstruction.ExpectedTaskType}'.");
+            _logger.Info($"Handling PrepareForTask: ActionId '{prepareInstruction.ActionId}', TaskId '{prepareInstruction.TaskId}', ExpectedType '{prepareInstruction.ExpectedTaskType}'."); // OpId -> ActionId, .OperationId -> .ActionId
 
             bool isCurrentlyReady = true;
             string reasonIfNotReady = string.Empty;
@@ -134,7 +134,7 @@ namespace SiteKeeper.Slave.Services
 
             var readinessReportDto = new SlaveTaskReadinessReport
             {
-                OperationId = prepareInstruction.OperationId,
+                ActionId = prepareInstruction.ActionId, // OperationId -> ActionId
                 TaskId = prepareInstruction.TaskId,
                 NodeName = _agentName,
                 IsReady = isCurrentlyReady,
@@ -168,21 +168,21 @@ namespace SiteKeeper.Slave.Services
         /// and then launches the actual task execution via <see cref="IExecutiveCodeExecutor.ExecuteTaskAsync"/>
         /// in a background thread (using <see cref="Task.Run(Func{Task})"/>) to avoid blocking the caller.
         /// Progress and final status are reported back to the master using the <see cref="_sendTaskUpdateAsyncCallback"/>.
-        /// MDLC context (OperationId, TaskId, NodeName) is expected to be set by the caller.
+        /// MDLC context (ActionId, TaskId, NodeName) is expected to be set by the caller. // OperationId -> ActionId
         /// </remarks>
         public async Task HandleSlaveTaskAsync(
             SlaveTaskInstruction instruction,
             ConcurrentDictionary<string, SlaveTaskContext> activeSlaveTasks,
             SemaphoreSlim concurrentTaskSemaphore)
         {
-            _logger.Info($"Handling SlaveTask: TaskId '{instruction.TaskId}', Type '{instruction.TaskType}', OpId '{instruction.OperationId}'.");
+            _logger.Info($"Handling SlaveTask: TaskId '{instruction.TaskId}', Type '{instruction.TaskType}', ActionId '{instruction.ActionId}'."); // OpId -> ActionId, .OperationId -> .ActionId
 
             // Try to acquire semaphore with a short timeout to prevent blocking if slave is very busy
             if (!await concurrentTaskSemaphore.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None)) // Use CancellationToken.None for semaphore acquisition
             {
                 _logger.Warn($"Concurrency limit reached (available slots before this try: {concurrentTaskSemaphore.CurrentCount}). TaskId: {instruction.TaskId} rejected.");
                 await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate { 
-                    OperationId = instruction.OperationId, TaskId = instruction.TaskId, NodeName = _agentName,
+                    ActionId = instruction.ActionId, TaskId = instruction.TaskId, NodeName = _agentName, // OperationId -> ActionId
                     Status = NodeTaskStatus.Failed.ToString(), 
                     Message = "Agent busy, concurrency limit reached.", 
                     TimestampUtc = DateTime.UtcNow 
@@ -194,7 +194,7 @@ namespace SiteKeeper.Slave.Services
             var taskContext = new SlaveTaskContext(instruction);
             if (!activeSlaveTasks.TryAdd(instruction.TaskId, taskContext))
             {
-                _logger.Warn($"Task {instruction.TaskId} (OpId {instruction.OperationId}) is already active or failed to add to dictionary. Ignoring new request.");
+                _logger.Warn($"Task {instruction.TaskId} (ActionId {instruction.ActionId}) is already active or failed to add to dictionary. Ignoring new request."); // OpId -> ActionId, .OperationId -> .ActionId
                 concurrentTaskSemaphore.Release(); // Release semaphore if task cannot be added
                 return;
             }
@@ -202,16 +202,16 @@ namespace SiteKeeper.Slave.Services
             _logger.Info($"Task {instruction.TaskId} accepted for execution. Total active tasks now: {activeSlaveTasks.Count}");
             taskContext.CurrentLocalStatus = SlaveLocalTaskExecutionStatus.Starting;
             await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                OperationId = instruction.OperationId, TaskId = instruction.TaskId, NodeName = _agentName,
+                ActionId = instruction.ActionId, TaskId = instruction.TaskId, NodeName = _agentName, // OperationId -> ActionId
                 Status = NodeTaskStatus.Starting.ToString(), Message = "Task starting execution.", TimestampUtc = DateTime.UtcNow
             });
 
             // Execute the task using Task.Run to avoid blocking the SignalR handler thread.
-            // The MDLC context (OpId, TaskId, NodeName) set by SlaveAgentService should flow into this Task.Run.
+            // The MDLC context (ActionId, TaskId, NodeName) set by SlaveAgentService should flow into this Task.Run. // OpId -> ActionId
             taskContext.ExecutionTask = Task.Run(async () =>
             {
                 // Set the MDLC context here, so it applies to the lifetime of this background task.
-                NLog.MappedDiagnosticsLogicalContext.Set("SK-OperationId", instruction.OperationId);
+                NLog.MappedDiagnosticsLogicalContext.Set("SK-ActionId", instruction.ActionId); // SK-OperationId -> SK-ActionId, .OperationId -> .ActionId
                 NLog.MappedDiagnosticsLogicalContext.Set("SK-TaskId", instruction.TaskId);
 
                 // Get a logger instance here; it should pick up MDLC from the current async context if set by caller
@@ -242,7 +242,7 @@ namespace SiteKeeper.Slave.Services
                             if (taskContext.ShouldSendProgressUpdate(progress)) 
                             {
                                 _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                                    OperationId = instruction.OperationId,
+                            ActionId = instruction.ActionId, // OperationId -> ActionId
                                     TaskId = instruction.TaskId,
                                     NodeName = _agentName,
                                     Status = NodeTaskStatus.InProgress.ToString(), Message = $"Task progress {progress}%",
@@ -280,7 +280,7 @@ namespace SiteKeeper.Slave.Services
                 {
                     taskContext.LastStatusUpdateUtc = DateTime.UtcNow;
                     await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                        OperationId = instruction.OperationId,
+                        ActionId = instruction.ActionId, // OperationId -> ActionId
                         TaskId = instruction.TaskId,
                         NodeName = _agentName,
                         Status = MapSlaveLocalStatusToNodeTaskStatus(taskContext.CurrentLocalStatus).ToString(),
@@ -292,10 +292,10 @@ namespace SiteKeeper.Slave.Services
 
                     activeSlaveTasks.TryRemove(instruction.TaskId, out _);
                     concurrentTaskSemaphore.Release();
-                    taskSpecificNLogLogger.Info($"Task {instruction.TaskId} (Op: {instruction.OperationId}) finished with status {taskContext.CurrentLocalStatus}. Semaphore released. Active tasks: {activeSlaveTasks.Count}");
+                    taskSpecificNLogLogger.Info($"Task {instruction.TaskId} (Action: {instruction.ActionId}) finished with status {taskContext.CurrentLocalStatus}. Semaphore released. Active tasks: {activeSlaveTasks.Count}"); // Op -> Action, .OperationId -> .ActionId
 
                     // Clear the MDLC context at the very end of the task's lifecycle.
-                    NLog.MappedDiagnosticsLogicalContext.Remove("SK-OperationId");
+                    NLog.MappedDiagnosticsLogicalContext.Remove("SK-ActionId"); // SK-OperationId -> SK-ActionId
                     NLog.MappedDiagnosticsLogicalContext.Remove("SK-TaskId");
                 }
             }, taskContext.CancellationTokenSource.Token);
@@ -308,18 +308,18 @@ namespace SiteKeeper.Slave.Services
         /// <param name="taskId">The unique ID of the task to cancel.</param>
         /// <param name="activeSlaveTasks">A concurrent dictionary holding context for currently active tasks.</param>
         /// <remarks>
-        /// If the specified task is found in <paramref name="activeSlaveTasks"/> and matches the <paramref name="operationId"/>,
+        /// If the specified task is found in <paramref name="activeSlaveTasks"/> and matches the <paramref name="actionId"/> (formerly operationId),
         /// and is in a cancellable state, its <see cref="CancellationTokenSource"/> is cancelled.
         /// A "Cancelling" status update is sent back to the master.
-        /// MDLC context (OperationId, TaskId, NodeName) is expected to be set by the caller.
+        /// MDLC context (ActionId, TaskId, NodeName) is expected to be set by the caller. // OperationId -> ActionId
         /// </remarks>
-        public async Task HandleTaskCancelRequestAsync(string operationId, string taskId, ConcurrentDictionary<string, SlaveTaskContext> activeSlaveTasks)
+        public async Task HandleTaskCancelRequestAsync(string actionId, string taskId, ConcurrentDictionary<string, SlaveTaskContext> activeSlaveTasks) // operationId param renamed to actionId
         {
-            _logger.Info($"Handling cancellation request for OpId: {operationId}, TaskId: {taskId}");
+            _logger.Info($"Handling cancellation request for ActionId: {actionId}, TaskId: {taskId}"); // OpId -> ActionId
             if (activeSlaveTasks.TryGetValue(taskId, out var taskContext))
             {
-                // Ensure the operation ID also matches to prevent cancelling the wrong instance if a TaskId was reused with a new OpId.
-                if (taskContext.Instruction.OperationId == operationId)
+                // Ensure the action ID also matches to prevent cancelling the wrong instance if a TaskId was reused with a new ActionId.
+                if (taskContext.Instruction.ActionId == actionId) // .OperationId -> .ActionId, operationId param -> actionId
                 {
                     if (taskContext.CurrentLocalStatus < SlaveLocalTaskExecutionStatus.Succeeded && // Not already completed
                         taskContext.CurrentLocalStatus != SlaveLocalTaskExecutionStatus.Cancelled && // Not already cancelled
@@ -331,13 +331,13 @@ namespace SiteKeeper.Slave.Services
 
                         // Report "Cancelling" status to master
                         await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                            OperationId = operationId, TaskId = taskId, NodeName = _agentName,
+                            ActionId = actionId, TaskId = taskId, NodeName = _agentName, // OperationId -> ActionId, operationId param -> actionId
                             Status = NodeTaskStatus.Cancelling.ToString(), // Master's view of "Cancelling"
                             Message = "Cancellation initiated by master; attempting to stop task.",
                             TimestampUtc = DateTime.UtcNow
                         });
                     } else { _logger.Info($"Task {taskId} is already in a terminal state ({taskContext.CurrentLocalStatus}) or already cancelling. Ignoring redundant cancellation request."); }
-                } else { _logger.Warn($"Mismatched OperationId for TaskId {taskId} on cancel request. Request OpId: {operationId}, Task OpId: {taskContext.Instruction.OperationId}. Ignoring."); }
+                } else { _logger.Warn($"Mismatched ActionId for TaskId {taskId} on cancel request. Request ActionId: {actionId}, Task ActionId: {taskContext.Instruction.ActionId}. Ignoring."); } // OpId -> ActionId, .OperationId -> .ActionId, operationId param -> actionId
             } else { _logger.Warn($"Task {taskId} not found in active tasks. Cannot cancel."); }
         }
 
@@ -351,7 +351,7 @@ namespace SiteKeeper.Slave.Services
         /// If the difference is within the <paramref name="maxTimeAdjustmentMinutesWithoutForce"/> threshold,
         /// it attempts to set the system time using platform-specific native methods.
         /// A status update is sent back to the master indicating success or failure.
-        /// MDLC context (OperationId, TaskId, NodeName) is expected to be set by the caller.
+        /// MDLC context (ActionId, TaskId, NodeName) is expected to be set by the caller. // OperationId -> ActionId
         /// Note: The actual time setting logic is platform-dependent (Windows in this case).
         /// </remarks>
         public async Task HandleAdjustSystemTimeAsync(AdjustSystemTimeCommand command, int maxTimeAdjustmentMinutesWithoutForce)
@@ -359,7 +359,7 @@ namespace SiteKeeper.Slave.Services
             _logger.Info($"Handling AdjustSystemTime. Master's Authoritative UTC: {command.AuthoritativeUtcTimestamp}. My UTC before: {DateTime.UtcNow}");
 
             TimeSpan differenceFromCurrent = DateTime.UtcNow - command.AuthoritativeUtcTimestamp;
-            string operationSystemTimeSync = "SYSTEM_TIME_SYNC"; // Consistent OperationId for these system actions
+            string actionSystemTimeSync = "SYSTEM_TIME_SYNC"; // Consistent ActionId for these system actions (operationSystemTimeSync -> actionSystemTimeSync)
             string taskIdTimeSyncAck = $"timesyncack-{DateTime.UtcNow.Ticks}";
 
 
@@ -368,7 +368,7 @@ namespace SiteKeeper.Slave.Services
                 string message = $"Time adjustment from master ({command.AuthoritativeUtcTimestamp}) is too large (difference: {differenceFromCurrent.TotalMinutes:F2} minutes) and ForceAdjustment is false. Skipping adjustment.";
                 _logger.Error(message);
                 await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate { 
-                    OperationId = operationSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName,
+                    ActionId = actionSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName, // OperationId -> ActionId, operationSystemTimeSync -> actionSystemTimeSync
                     Status = NodeTaskStatus.Failed.ToString(), Message = message,
                     TimestampUtc = DateTime.UtcNow
                 });
@@ -394,7 +394,7 @@ namespace SiteKeeper.Slave.Services
                         string successMsg = $"System time successfully adjusted to {command.AuthoritativeUtcTimestamp} (was {command.AuthoritativeUtcTimestamp.Add(differenceFromCurrent)}). Difference: {differenceFromCurrent.TotalSeconds:F2}s.";
                         _logger.Info(successMsg);
                         await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                             OperationId = operationSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName,
+                             ActionId = actionSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName, // OperationId -> ActionId, operationSystemTimeSync -> actionSystemTimeSync
                              Status = NodeTaskStatus.Succeeded.ToString(), Message = successMsg, TimestampUtc = DateTime.UtcNow
                         });
                     }
@@ -403,7 +403,7 @@ namespace SiteKeeper.Slave.Services
                         string errorMsg = $"Failed to set system time. Error code: {Marshal.GetLastWin32Error()}";
                         _logger.Error(errorMsg);
                          await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                            OperationId = operationSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName,
+                            ActionId = actionSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName, // OperationId -> ActionId, operationSystemTimeSync -> actionSystemTimeSync
                             Status = NodeTaskStatus.Failed.ToString(), Message = errorMsg, TimestampUtc = DateTime.UtcNow
                         });
                     }
@@ -413,7 +413,7 @@ namespace SiteKeeper.Slave.Services
                     string unsupportedMsg = "System time adjustment is not supported on this OS platform.";
                      _logger.Warn(unsupportedMsg);
                     await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                        OperationId = operationSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName,
+                        ActionId = actionSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName, // OperationId -> ActionId, operationSystemTimeSync -> actionSystemTimeSync
                         Status = NodeTaskStatus.Failed.ToString(), Message = unsupportedMsg, TimestampUtc = DateTime.UtcNow
                     });
                 }
@@ -423,7 +423,7 @@ namespace SiteKeeper.Slave.Services
                 string exceptionMsg = $"Exception during system time adjustment: {ex.Message}";
                 _logger.Error(ex, exceptionMsg);
                 await _sendTaskUpdateAsyncCallback(new SlaveTaskProgressUpdate {
-                    OperationId = operationSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName,
+                    ActionId = actionSystemTimeSync, TaskId = taskIdTimeSyncAck, NodeName = _agentName, // OperationId -> ActionId, operationSystemTimeSync -> actionSystemTimeSync
                     Status = NodeTaskStatus.Failed.ToString(), Message = exceptionMsg, TimestampUtc = DateTime.UtcNow
                 });
             }

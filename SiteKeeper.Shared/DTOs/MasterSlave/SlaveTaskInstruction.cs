@@ -10,10 +10,10 @@ namespace SiteKeeper.Shared.DTOs.MasterSlave
     public class SlaveTaskInstruction
     {
         /// <summary>
-        /// The unique identifier of the overall operation this task belongs to.
+        /// The unique identifier of the overall node action this task belongs to.
         /// </summary>
         [Required]
-        public string OperationId { get; set; } = string.Empty;
+        public string ActionId { get; set; } = string.Empty; // Renamed from OperationId
 
         /// <summary>
         /// The unique identifier for this specific task to be executed.

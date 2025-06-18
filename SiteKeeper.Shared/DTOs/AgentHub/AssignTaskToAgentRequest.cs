@@ -10,7 +10,7 @@ namespace SiteKeeper.Shared.DTOs.AgentHub
     /// </summary>
     /// <remarks>
     /// This message is sent from the Master's AgentHub to a specific Slave Agent.
-    /// It details the operation and task ID, the type of task the slave needs to perform,
+    /// It details the node action and task ID, the type of task the slave needs to perform,
     /// the payload necessary for task execution, and an optional timeout.
     /// Corresponds to the `AssignTaskToAgentRequest` schema in `web api swagger.yaml`.
     /// The `SlaveTaskType` enum is defined in `SiteKeeper.Shared.Enums` and comes from `SiteKeeper - Slave - data structures.md`.
@@ -18,11 +18,11 @@ namespace SiteKeeper.Shared.DTOs.AgentHub
     public class AssignTaskToAgentRequest
     {
         /// <summary>
-        /// The unique identifier of the overall operation this task belongs to.
+        /// The unique identifier of the overall node action this task belongs to.
         /// </summary>
-        /// <example>"op-deploy-webapp-123"</example>
+        /// <example>"na-deploy-webapp-123"</example>
         [Required]
-        public string OperationId { get; set; } = string.Empty;
+        public string ActionId { get; set; } = string.Empty; // Renamed from OperationId
 
         /// <summary>
         /// The unique identifier for this specific task assigned to the agent.

@@ -191,15 +191,15 @@ namespace SiteKeeper.Master.Services
             SendToAgentAsync(nodeName, (client, req) => client.ReceiveCancelTaskRequestAsync(req), request);
         
         /// <summary>
-        /// Sends a command to a specific slave agent instructing it to flush its buffered log queue for a given operation.
+        /// Sends a command to a specific slave agent instructing it to flush its buffered log queue for a given node action.
         /// </summary>
         /// <param name="nodeName">The unique name of the target slave node.</param>
-        /// <param name="operationId">The unique identifier of the operation whose logs should be flushed.</param>
+        /// <param name="actionId">The unique identifier of the node action whose logs should be flushed.</param>
         /// <returns>A task representing the asynchronous send operation.</returns>
-        public Task RequestLogFlushForTask(string nodeName, string operationId)
+        public Task RequestLogFlushForTask(string nodeName, string actionId)
         {
-            _logger.LogDebug("Sending log flush request to node {NodeName} for operation {OperationId}", nodeName, operationId);
-            return SendToAgentAsync(nodeName, (client, opId) => client.RequestLogFlushForTask(opId), operationId);
+            _logger.LogDebug("Sending log flush request to node {NodeName} for action {ActionId}", nodeName, actionId);
+            return SendToAgentAsync(nodeName, (client, actId) => client.RequestLogFlushForTask(actId), actionId);
         }
 
         /// <summary>

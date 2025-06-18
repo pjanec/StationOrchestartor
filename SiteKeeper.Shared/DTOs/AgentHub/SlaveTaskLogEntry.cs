@@ -10,16 +10,16 @@ namespace SiteKeeper.Shared.DTOs.AgentHub
     /// </summary>
     /// <remarks>
     /// As defined in "SiteKeeper - Task Related Log Flow and Handling.md".
-    /// It contains all necessary context (OperationId, TaskId, NodeName) to allow the master
-    /// to correlate the log message with the correct operation and persist it in the correct journal file.
+    /// It contains all necessary context (ActionId, TaskId, NodeName) to allow the master
+    /// to correlate the log message with the correct node action and persist it in the correct journal file.
     /// </remarks>
     public class SlaveTaskLogEntry
     {
         /// <summary>
-        /// The unique ID of the overall operation this log entry belongs to.
+        /// The unique ID of the overall node action this log entry belongs to.
         /// </summary>
-        [JsonPropertyName("operationId")]
-        public string OperationId { get; set; } = string.Empty;
+        [JsonPropertyName("actionId")] // Changed from operationId
+        public string ActionId { get; set; } = string.Empty; // Renamed from OperationId
 
         /// <summary>
         /// The unique ID of the specific task on the node this log entry belongs to.

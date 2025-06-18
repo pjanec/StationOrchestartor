@@ -10,10 +10,10 @@ namespace SiteKeeper.Shared.DTOs.MasterSlave
     public class PrepareForTaskInstruction
     {
         /// <summary>
-        /// The unique identifier of the overall operation this task belongs to.
+        /// The unique identifier of the overall node action this task belongs to.
         /// </summary>
         [Required]
-        public string OperationId { get; set; } = string.Empty;
+        public string ActionId { get; set; } = string.Empty; // Renamed from OperationId
 
         /// <summary>
         /// The unique identifier for the specific task the slave should prepare for.
@@ -30,7 +30,7 @@ namespace SiteKeeper.Shared.DTOs.MasterSlave
         /// <summary>
         /// Optional: A JSON string containing any parameters relevant to the readiness check itself.
         /// For example, required disk space, specific software versions to check for, etc.
-        /// The slave's OperationHandler for the preparation phase would parse this.
+        /// The slave's task handler for the preparation phase would parse this.
         /// </summary>
         public string? PreparationParametersJson { get; set; }
 
