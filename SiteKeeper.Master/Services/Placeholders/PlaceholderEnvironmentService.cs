@@ -19,7 +19,7 @@ namespace SiteKeeper.Master.Services.Placeholders
     /// manifests, and recent changes. It does not interact with any real environment components.
     /// In a production environment, this would be replaced with a concrete implementation
     /// that gathers live data from the managed environment.
-    /// This service combines implementations and ensures all methods from <see cref="IEnvironmentService"/> are present.
+    /// Method-specific details are inherited from <see cref="IEnvironmentService"/> documentation where <c>&lt;inheritdoc /&gt;</c> is used.
     /// </remarks>
     public class PlaceholderEnvironmentService : IEnvironmentService
     {
@@ -28,7 +28,8 @@ namespace SiteKeeper.Master.Services.Placeholders
         /// <summary>
         /// Initializes a new instance of the <see cref="PlaceholderEnvironmentService"/> class.
         /// </summary>
-        /// <param name="logger">The logger for this service.</param>
+        /// <param name="logger">The logger for recording service activity and placeholder notifications.</param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="logger"/> is null.</exception>
         public PlaceholderEnvironmentService(ILogger<PlaceholderEnvironmentService> logger)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));

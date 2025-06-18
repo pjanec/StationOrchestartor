@@ -12,42 +12,56 @@ using System.Threading.Tasks;
 namespace SiteKeeper.Master.Hubs
 {
     /// <summary>
-    /// SignalR Hub for communication between the Master Agent and Slave Agents.
-    /// In the new architecture, this hub acts as a lightweight message router. Its primary
-    /// responsibility is to receive messages from connected slaves and forward them to the
-    /// appropriate singleton service for processing. It no longer contains complex business logic.
+    /// SignalR Hub for real-time communication between the SiteKeeper Master Agent and connected Slave Agents.
+    /// This hub implements <see cref="IAgentHubClient"/> for methods callable by Slave Agents,
+    /// and uses <see cref="IAgentHub"/> (via <see cref="IHubContext{THub, TClient}"/>) to call methods on Slave Agents.
     /// </summary>
+    /// <remarks>
+    /// In the current architecture, this hub primarily acts as a lightweight message router. Its main
+    /// responsibility is to receive messages from connected slaves and forward them to the
+    /// appropriate singleton service (e.g., <see cref="IAgentConnectionManagerService"/>, <see cref="MultiNodeOperationStageHandler"/>)
+    /// for processing. It generally does not contain complex business logic itself.
+    /// Connection lifecycle events (connect/disconnect) are managed here and delegated to the <see cref="IAgentConnectionManagerService"/>.
+    /// A <c>NodeNameItemKey</c> is used with <see cref="HubCallerContext.Items"/> to associate SignalR connections with authenticated node names.
+    /// </remarks>
     public class AgentHub : Hub<IAgentHub>, IAgentHubClient
     {
-        private const string NodeNameItemKey = "NodeName";
+        private const string NodeNameItemKey = "NodeName"; // Key for storing NodeName in Context.Items
         private readonly IAgentConnectionManagerService _agentConnectionManager;
-        private readonly MultiNodeOperationStageHandler _multiNodeStageHandler;
+        private readonly MultiNodeOperationStageHandler _multiNodeStageHandler; // Concrete class injection for direct method calls
         private readonly ILogger<AgentHub> _logger;
+        // IJournalService is injected but primarily used via MultiNodeOperationStageHandler for slave logs.
+        // If AgentHub were to directly journal other specific events, it could use this.
         private readonly IJournalService _journalService;
 
         /// <summary>
-        /// Initializes a new instance of the AgentHub.
-        // It injects the concrete MultiNodeOperationStageHandler class, which must be registered
-        // as a singleton, to call its public methods for processing slave feedback.
+        /// Initializes a new instance of the <see cref="AgentHub"/> class.
         /// </summary>
+        /// <param name="agentConnectionManager">Service for managing agent connections and lifecycle.</param>
+        /// <param name="multiNodeStageHandler">Handler for processing task-related messages from agents (status, readiness, logs).</param>
+        /// <param name="logger">Logger for hub activities.</param>
+        /// <param name="journalService">Service for journaling (though direct use here might be minimal, often delegated).</param>
+        /// <exception cref="ArgumentNullException">Thrown if any of the injected services are null.</exception>
         public AgentHub(
             IAgentConnectionManagerService agentConnectionManager,
-            MultiNodeOperationStageHandler multiNodeStageHandler,
+            MultiNodeOperationStageHandler multiNodeStageHandler, // Assuming this is correctly registered as singleton or scoped if Hub is transient
             ILogger<AgentHub> logger,
             IJournalService journalService)
         {
             _agentConnectionManager = agentConnectionManager ?? throw new ArgumentNullException(nameof(agentConnectionManager));
             _multiNodeStageHandler = multiNodeStageHandler ?? throw new ArgumentNullException(nameof(multiNodeStageHandler));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-			_journalService = journalService ?? throw new ArgumentNullException( nameof( journalService ) );
+			_journalService = journalService ?? throw new ArgumentNullException(nameof(journalService));
 		}
 
         #region Connection Lifecycle Management
 
         /// <summary>
-        /// Called when a new client connects. It logs the connection and waits for the agent to register.
-        /// The logic is delegated to the AgentConnectionManagerService after registration.
+        /// Called when a new client connects to the hub.
+        /// Logs the connection attempt. Actual agent registration and association with a node name
+        /// occur when the agent calls the <see cref="RegisterSlaveAsync"/> method.
         /// </summary>
+        /// <returns>A <see cref="Task"/> that represents the asynchronous connect event.</returns>
         public override async Task OnConnectedAsync()
         {
             _logger.LogInformation("Client connected: {ConnectionId}. Waiting for agent registration.", Context.ConnectionId);
@@ -55,23 +69,25 @@ namespace SiteKeeper.Master.Hubs
         }
 
         /// <summary>
-        /// Called when a client disconnects. It identifies the agent via its connection context
-        /// and delegates the disconnection logic to the AgentConnectionManagerService.
+        /// Called when a client disconnects from the hub.
+        /// Retrieves the node name associated with the connection (if registered) from <see cref="HubCallerContext.Items"/>
+        /// and delegates the disconnection logic to the <see cref="IAgentConnectionManagerService"/>.
         /// </summary>
+        /// <param name="exception">The <see cref="Exception"/> that occurred during disconnect, if any.</param>
+        /// <returns>A <see cref="Task"/> that represents the asynchronous disconnect event.</returns>
         public override async Task OnDisconnectedAsync(Exception? exception)
         {
-            // Retrieve the NodeName that was stored in the context during registration.
             string? nodeName = Context.Items.TryGetValue(NodeNameItemKey, out var nodeNameObj) ? nodeNameObj as string : null;
 
             if (!string.IsNullOrEmpty(nodeName))
             {
-                _logger.LogInformation("Agent disconnected: {NodeName} (ConnectionId: {ConnectionId}).", nodeName, Context.ConnectionId);
+                _logger.LogInformation("Agent '{NodeName}' (ConnectionId: {ConnectionId}) disconnected. Exception: {Exception}", nodeName, Context.ConnectionId, exception?.Message ?? "N/A");
                 await _agentConnectionManager.OnAgentDisconnectedAsync(Context.ConnectionId, nodeName);
             }
             else
             {
-                _logger.LogWarning("Unregistered client disconnected: {ConnectionId}.", Context.ConnectionId);
-                await _agentConnectionManager.OnAgentDisconnectedAsync(Context.ConnectionId, null);
+                _logger.LogWarning("Unregistered client disconnected: {ConnectionId}. Exception: {Exception}", Context.ConnectionId, exception?.Message ?? "N/A");
+                await _agentConnectionManager.OnAgentDisconnectedAsync(Context.ConnectionId, null); // Ensure manager service is notified even for unregistered disconnects
             }
             await base.OnDisconnectedAsync(exception);
         }
@@ -82,90 +98,113 @@ namespace SiteKeeper.Master.Hubs
 
         /// <summary>
         /// Handles the registration request from a newly connected slave agent.
-        /// This is a critical step that associates a ConnectionId with a NodeName.
+        /// Delegates to <see cref="IAgentConnectionManagerService.OnAgentConnectedAsync"/> to register the agent
+        /// and then stores the authenticated node name in the <see cref="HubCallerContext.Items"/> for this connection.
         /// </summary>
+        /// <param name="request">The <see cref="SlaveRegistrationRequest"/> DTO sent by the slave agent.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous registration operation.</returns>
         public async Task RegisterSlaveAsync(SlaveRegistrationRequest request)
         {
             var remoteIpAddress = Context.GetHttpContext()?.Connection.RemoteIpAddress?.ToString();
             var agentInfo = await _agentConnectionManager.OnAgentConnectedAsync(Context.ConnectionId, request, remoteIpAddress);
             
-            // Store the authenticated NodeName in the connection's context for reliable retrieval on disconnect.
-            Context.Items[NodeNameItemKey] = agentInfo.NodeName;
+            Context.Items[NodeNameItemKey] = agentInfo.NodeName; // Associate NodeName with ConnectionId
+            _logger.LogInformation("Agent '{NodeName}' successfully registered for ConnectionId {ConnectionId}.", agentInfo.NodeName, Context.ConnectionId);
         }
 
         /// <summary>
-        /// Forwards a heartbeat from a slave to the AgentConnectionManagerService.
+        /// Receives a heartbeat from a slave agent and forwards it to the <see cref="IAgentConnectionManagerService"/>
+        /// for processing (which typically delegates to <see cref="INodeHealthMonitorService"/>).
         /// </summary>
+        /// <param name="heartbeat">The <see cref="SlaveHeartbeat"/> DTO from the agent.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous processing of the heartbeat.</returns>
         public async Task SendHeartbeatAsync(SlaveHeartbeat heartbeat)
         {
-            // The hub's responsibility ends here. The manager service will pass it
-            // to the health monitor for processing.
+            _logger.LogTrace("Heartbeat received from Node: {NodeName}", heartbeat.NodeName);
             await _agentConnectionManager.ProcessHeartbeatAsync(heartbeat);
         }
 
         /// <summary>
-        /// Forwards a task progress update from a slave directly to the MultiNodeOperationStageHandler.
+        /// Receives a task progress update from a slave agent and forwards it directly to the
+        /// <see cref="MultiNodeOperationStageHandler"/> for processing and state updates.
         /// </summary>
+        /// <param name="taskUpdate">The <see cref="SlaveTaskProgressUpdate"/> DTO from the agent.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous processing of the task update.</returns>
         public async Task ReportOngoingTaskProgressAsync(SlaveTaskProgressUpdate taskUpdate)
         {
-            // The hub is just a pass-through. The stage handler contains all the logic
-            // for updating the state of the operation.
+            _logger.LogTrace("Task progress update from Node: {NodeName}, TaskId: {TaskId}, Status: {Status}",
+                taskUpdate.NodeName, taskUpdate.TaskId, taskUpdate.Status);
             await _multiNodeStageHandler.ProcessTaskStatusUpdateAsync(taskUpdate);
         }
 
         /// <summary>
-        /// Forwards a task readiness report from a slave directly to the MultiNodeOperationStageHandler.
+        /// Receives a task readiness report from a slave agent and forwards it directly to the
+        /// <see cref="MultiNodeOperationStageHandler"/> for processing.
         /// </summary>
+        /// <param name="readinessReport">The <see cref="SlaveTaskReadinessReport"/> DTO from the agent.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous processing of the readiness report.</returns>
         public async Task ReportSlaveTaskReadinessAsync(SlaveTaskReadinessReport readinessReport)
         {
+            _logger.LogDebug("Task readiness report from Node: {NodeName}, TaskId: {TaskId}, IsReady: {IsReady}",
+                readinessReport.NodeName, readinessReport.TaskId, readinessReport.IsReady);
             await _multiNodeStageHandler.ProcessSlaveTaskReadinessAsync(readinessReport);
         }
 
         /// <summary>
-        /// Forwards a log flush confirmation from a slave directly to the MultiNodeOperationStageHandler.
-        /// This is the final step in the log synchronization handshake.
+        /// Receives a log flush confirmation from a slave agent and forwards it to the
+        /// <see cref="MultiNodeOperationStageHandler"/>. This is part of log synchronization.
         /// </summary>
-        public async Task ConfirmLogFlushForTask(string operationId, string nodeName)
+        /// <param name="operationId">The ID of the operation for which logs were flushed.</param>
+        /// <param name="nodeName">The name of the node confirming the flush.</param>
+        /// <returns>A <see cref="Task"/> representing the completion of this hub method call.</returns>
+        public Task ConfirmLogFlushForTask(string operationId, string nodeName) // Removed async as it's a synchronous call to handler
         {
-            _multiNodeStageHandler.ConfirmLogFlush(operationId, nodeName);
-            await Task.CompletedTask; // Hub methods must return a Task.
+            _logger.LogDebug("Log flush confirmation from Node: {NodeName} for OperationId: {OperationId}", nodeName, operationId);
+            _multiNodeStageHandler.ConfirmLogFlush(operationId, nodeName); // This method in handler is void
+            return Task.CompletedTask;
         }
 
         /// <summary>
-        /// Receives a log entry from a slave and forwards it to the Journal Service.
-        /// This is the missing piece that allows slave logs to be persisted on the master.
+        /// Receives a log entry from a slave agent related to a task and forwards it to the
+        /// <see cref="MultiNodeOperationStageHandler"/> for journaling.
         /// </summary>
-        /// <param name="logEntry">The log entry DTO from the slave.</param>
+        /// <param name="logEntry">The <see cref="SlaveTaskLogEntry"/> DTO from the slave agent.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous processing of the log entry.</returns>
         public async Task ReportSlaveTaskLogAsync(SlaveTaskLogEntry logEntry)
         {
-            _logger.LogInformation("HUB-ENTRY: ReportSlaveTaskLogAsync received from slave. OpId: {OpId}, TaskId: {TaskId}, Node: {Node}, Message: '{Message}'", 
-                logEntry.OperationId, logEntry.TaskId, logEntry.NodeName, logEntry.LogMessage);
+            _logger.LogTrace("Slave task log from Node: {NodeName}, OpId: {OpId}, TaskId: {TaskId}, Message: '{Message}'",
+                logEntry.NodeName, logEntry.OperationId, logEntry.TaskId, logEntry.LogMessage);
 
             if (logEntry == null || string.IsNullOrEmpty(logEntry.OperationId))
             {
                 _logger.LogWarning("Received an invalid or empty log entry from a slave on connection {ConnectionId}.", Context.ConnectionId);
                 return;
             }
-
-            // The multinodestagehandler is now responsible for calling the journal service and tracking the task.
             await _multiNodeStageHandler.JournalSlaveLogAsync(logEntry);
         }
 
-        #endregion
-
-        public async Task ReportResourceUsageAsync(SlaveResourceUsage resourceUsage)
+        /// <summary>
+        /// Receives a resource usage report from a slave agent.
+        /// </summary>
+        /// <remarks>
+        /// Currently, this method logs the received report. Processing of this report (e.g., updating
+        /// <see cref="INodeHealthMonitorService"/> or <see cref="IAgentConnectionManagerService"/>) is noted as a TODO.
+        /// </remarks>
+        /// <param name="resourceUsage">The <see cref="SlaveResourceUsage"/> DTO from the agent.</param>
+        /// <returns>A <see cref="Task"/> representing the completion of this hub method call.</returns>
+        public Task ReportResourceUsageAsync(SlaveResourceUsage resourceUsage)
         {
             if (resourceUsage == null || string.IsNullOrWhiteSpace(resourceUsage.NodeName))
             {
                  _logger.LogWarning("Invalid resource usage report received (null or no NodeName) from {ConnectionId}.", Context.ConnectionId);
-                return;
+                return Task.CompletedTask;
             }
-            _logger.LogInformation("Resource usage report received from NodeName: {NodeName}. CPU: {CpuUsage}%, Mem: {MemUsage}B, Disk: {DiskSpaceMb}MB",
+            _logger.LogInformation("Resource usage report received from NodeName: {NodeName}. CPU: {CpuUsage}%, Mem: {MemUsageBytes}B, Disk: {DiskSpaceMb}MB",
                 resourceUsage.NodeName, resourceUsage.CpuUsagePercentage, resourceUsage.MemoryUsageBytes, resourceUsage.AvailableDiskSpaceMb);
-            // TODO: Implement processing of this report, e.g., by calling a method on _agentConnectionManagerService or another service.
-            // await _agentConnectionManagerService.ProcessResourceUsageAsync(resourceUsage);
-            await Task.CompletedTask; // Placeholder
+            // TODO: Implement processing of this report, e.g., by calling a method on _agentConnectionManagerService or INodeHealthMonitorService.
+            // Example: await _agentConnectionManagerService.ProcessResourceUsageAsync(resourceUsage);
+            return Task.CompletedTask; // Placeholder
         }
-
+        #endregion
     }
 }

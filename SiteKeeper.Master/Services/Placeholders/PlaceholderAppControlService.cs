@@ -8,8 +8,27 @@ using System.Linq;
 
 namespace SiteKeeper.Master.Services.Placeholders
 {
+    /// <summary>
+    /// Placeholder implementation of the <see cref="IAppControlService"/>.
+    /// Provides a predefined list of application statuses for development and testing purposes.
+    /// </summary>
+    /// <remarks>
+    /// This service simulates the behavior of a real application control service by returning
+    /// a static list of <see cref="AppStatusInfo"/> objects. It includes basic
+    /// filtering (by ID, AppName, NodeName, Description, PlanName) and sorting capabilities
+    /// to mimic interactions with a live service.
+    /// </remarks>
     public class PlaceholderAppControlService : IAppControlService
     {
+        /// <summary>
+        /// Placeholder implementation for listing manageable applications and their current statuses.
+        /// Returns a predefined list of <see cref="AppStatusInfo"/> objects and applies basic filtering and sorting.
+        /// </summary>
+        /// <param name="filterText">Optional text used to filter the application list.
+        /// The filter is applied to Id, AppName, NodeName, Description, and PlanName fields.</param>
+        /// <param name="sortBy">Optional field name to sort the results by (e.g., "id", "appname", "nodename").</param>
+        /// <param name="sortOrder">Optional sort order ("asc" or "desc").</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains a list of predefined <see cref="AppStatusInfo"/> DTOs, potentially filtered and sorted.</returns>
         public Task<List<AppStatusInfo>> ListAppsAsync(string? filterText, string? sortBy, string? sortOrder)
         {
             // This placeholder service now populates the AppStatusInfo DTO according to the

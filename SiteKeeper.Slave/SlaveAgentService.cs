@@ -105,6 +105,10 @@ namespace SiteKeeper.Slave
             _logger.LogInformation($"Slave Agent Service initialized for Node: '{_config.AgentName}'. Max concurrent tasks: {_config.MaxConcurrentTasks}.");
         }
 
+        /// <summary>
+        /// Initializes platform-specific performance counters for monitoring CPU and memory usage.
+        /// Currently, this is only supported on Windows.
+        /// </summary>
         private void InitializePerformanceCounters()
         {
             try
@@ -254,6 +258,54 @@ namespace SiteKeeper.Slave
             _stoppingCts?.Cancel();
         }
 
+        /// <summary>
+        /// Establishes and manages the SignalR connection to the Master Agent Hub.
+        /// </summary>
+        /// <param name="cancellationToken">A token to observe for cancellation requests, typically from the hosting service.</param>
+        /// <remarks>
+        /// This method performs the following key operations:
+        /// <list type="number">
+        ///   <item><description>Constructs the Master Agent Hub URL based on <see cref="SlaveConfig"/> settings.</description></item>
+        ///   <item><description>Configures the <see cref="HubConnectionBuilder"/>, including:
+        ///     <list type="bullet">
+        ///       <item><description>URL and transport options.</description></item>
+        ///       <item><description>HTTPS settings: If <see cref="SlaveConfig.UseHttpsForMasterConnection"/> is true, it configures SSL/TLS protocols (Tls12, Tls13).
+        ///                      It loads a client certificate if <see cref="SlaveConfig.ClientCertPath"/> is provided.
+        ///                      It sets up server certificate validation, allowing a custom CA certificate (<see cref="SlaveConfig.MasterCaCertPath"/>) or default system validation.</description></item>
+        ///       <item><description>An automatic reconnect policy (<see cref="SlaveHubReconnectPolicy"/>).</description></item>
+        ///       <item><description>JSON protocol for messaging.</description></item>
+        ///     </list>
+        ///   </description></item>
+        ///   <item><description>Registers client-side handlers for messages invoked by the master. These include:
+        ///     <list type="bullet">
+        ///       <item><description><c>ReceivePrepareForTaskInstructionAsync</c>: Delegates to <see cref="OperationHandler.HandlePrepareForTaskAsync"/>.</description></item>
+        ///       <item><description><c>ReceiveSlaveTaskAsync</c>: Delegates to <see cref="OperationHandler.HandleSlaveTaskAsync"/>.</description></item>
+        ///       <item><description><c>ReceiveCancelTaskRequestAsync</c>: Delegates to <see cref="OperationHandler.HandleTaskCancelRequestAsync"/>.</description></item>
+        ///       <item><description><c>ReceiveAdjustSystemTime</c>: Delegates to <see cref="OperationHandler.HandleAdjustSystemTimeAsync"/> (implicitly, though directly called in provided code).</description></item>
+        ///       <item><description><c>RequestLogFlushForTask</c>: Flushes the <see cref="SiteKeeperMasterBoundTarget"/> and confirms to master.</description></item>
+        ///       <item><description><c>SendGeneralCommandAsync</c>: Logs receipt (placeholder for actual command handling).</description></item>
+        ///       <item><description><c>UpdateMasterStateAsync</c>: Logs receipt of master state.</description></item>
+        ///     </list>
+        ///     Most handlers are wrapped in <see cref="HandleSignalRInvokeAsync"/> to manage NLog MDLC properties for contextual logging.
+        ///   </description></item>
+        ///   <item><description>Sets up handlers for SignalR connection events:
+        ///     <list type="bullet">
+        ///       <item><description><see cref="HubConnection.Reconnecting"/>: Logs the event, stops local timers, and clears the NLog target's hub connection provider.</description></item>
+        ///       <item><description><see cref="HubConnection.Reconnected"/>: Logs the event, re-registers with the master (<see cref="RegisterWithMasterAsync"/>), re-establishes the NLog target's hub connection provider, and restarts local timers.</description></item>
+        ///       <item><description><see cref="HubConnection.Closed"/>: Logs the error, stops timers, clears the NLog provider, and schedules a reconnection attempt if the service is not shutting down.</description></item>
+        ///     </list>
+        ///   </description></item>
+        ///   <item><description>Enters a loop to attempt connection to the master:
+        ///     <list type="bullet">
+        ///       <item><description>Calls <see cref="HubConnection.StartAsync(CancellationToken)"/>.</description></item>
+        ///       <item><description>On successful connection, sets the <see cref="SiteKeeperMasterBoundTarget"/>'s hub connection provider, calls <see cref="RegisterWithMasterAsync"/>, starts timers, and exits the loop.</description></item>
+        ///       <item><description>Handles <see cref="AuthenticationException"/> by logging a critical error and stopping the application, as this is usually unrecoverable without configuration changes.</description></item>
+        ///       <item><description>Handles other exceptions (excluding <see cref="OperationCanceledException"/>) by logging and scheduling a retry after <see cref="SlaveConfig.MasterConnectionRetryIntervalSeconds"/>.</description></item>
+        ///     </list>
+        ///   </description></item>
+        /// </list>
+        /// This method is designed to run asynchronously and continuously attempt to maintain a connection to the master unless explicitly stopped.
+        /// </remarks>
         private async Task ConnectToMasterAsync(CancellationToken cancellationToken)
         {
             var masterUrl = new UriBuilder(
@@ -512,6 +564,16 @@ namespace SiteKeeper.Slave
             _resourceMonitorTimer?.Change(Timeout.Infinite, 0);
         }
 
+        /// <summary>
+        /// Sends a heartbeat signal to the Master Agent.
+        /// </summary>
+        /// <remarks>
+        /// This method is typically called by a timer (<see cref="_heartbeatTimer"/>).
+        /// It constructs a <see cref="SlaveHeartbeat"/> DTO containing the agent's name, current timestamp,
+        /// number of active tasks, available task slots, and current CPU/RAM usage.
+        /// The DTO is then sent to the master by invoking the <c>SendHeartbeatAsync</c> hub method.
+        /// If the service is stopping (indicated by <see cref="_stoppingCts"/>), the send operation may be cancelled.
+        /// </remarks>
         private async Task SendHeartbeatAsync()
         {
             if (_masterConnection is null || _masterConnection.State != HubConnectionState.Connected)
@@ -548,7 +610,17 @@ namespace SiteKeeper.Slave
                 }
             }
         }
-        
+
+        /// <summary>
+        /// Sends a resource usage report to the Master Agent.
+        /// </summary>
+        /// <remarks>
+        /// This method is typically called by a timer (<see cref="_resourceMonitorTimer"/>).
+        /// It constructs a <see cref="SlaveResourceUsage"/> DTO containing the agent's name, current timestamp,
+        /// CPU usage percentage, memory usage in bytes, and available disk space in MB for the monitored drive.
+        /// The DTO is then sent to the master by invoking the <c>SendResourceUsageAsync</c> hub method.
+        /// If the service is stopping (indicated by <see cref="_stoppingCts"/>), the send operation may be cancelled.
+        /// </remarks>
         private async Task SendResourceUsageAsync()
         {
             if (_masterConnection is null || _masterConnection.State != HubConnectionState.Connected || (_stoppingCts?.IsCancellationRequested ?? false))
@@ -576,6 +648,17 @@ namespace SiteKeeper.Slave
             }
         }
 
+        /// <summary>
+        /// Sends a task progress or status update to the Master Agent.
+        /// This method is provided as a callback to the <see cref="OperationHandler"/>.
+        /// </summary>
+        /// <param name="taskUpdateDto">The <see cref="SlaveTaskProgressUpdate"/> DTO containing details about the task's progress, status, result, etc.</param>
+        /// <remarks>
+        /// Before invoking the master's <c>ReportOngoingTaskProgressAsync</c> hub method, this method sets
+        /// NLog MDLC properties (<see cref="LogMdlcOperationId"/>, <see cref="LogMdlcTaskId"/>) based on the
+        /// <paramref name="taskUpdateDto"/> to ensure contextual logging for the send operation. These MDLC properties are cleared afterwards.
+        /// If the service is stopping, the send operation may be cancelled.
+        /// </remarks>
         private async Task SendSlaveTaskUpdateAsync(SlaveTaskProgressUpdate taskUpdateDto)
         {
             if (_masterConnection?.State == HubConnectionState.Connected)
@@ -607,6 +690,17 @@ namespace SiteKeeper.Slave
             }
         }
 
+        /// <summary>
+        /// Sends a task readiness report to the Master Agent.
+        /// This method is provided as a callback to the <see cref="OperationHandler"/>.
+        /// </summary>
+        /// <param name="readinessReportDto">The <see cref="SlaveTaskReadinessReport"/> DTO indicating whether the slave is ready to execute a specific task.</param>
+        /// <remarks>
+        /// Before invoking the master's <c>ReportSlaveTaskReadinessAsync</c> hub method, this method sets
+        /// NLog MDLC properties (<see cref="LogMdlcOperationId"/>, <see cref="LogMdlcTaskId"/>) based on the
+        /// <paramref name="readinessReportDto"/> for contextual logging. These MDLC properties are cleared afterwards.
+        /// If the service is stopping, the send operation may be cancelled.
+        /// </remarks>
         public async Task SendTaskReadinessReportAsync(SlaveTaskReadinessReport readinessReportDto)
         {
             if (_masterConnection?.State == HubConnectionState.Connected)
@@ -638,6 +732,20 @@ namespace SiteKeeper.Slave
             }
         }
 
+        /// <summary>
+        /// Wraps the execution of SignalR client hub method handlers to provide consistent
+        /// NLog MDLC (Mapped Diagnostics Logical Context) setup and error handling.
+        /// </summary>
+        /// <param name="operationId">The operation ID associated with the incoming message, if any. Used to set <see cref="LogMdlcOperationId"/>.</param>
+        /// <param name="taskId">The task ID associated with the incoming message, if any. Used to set <see cref="LogMdlcTaskId"/>.</param>
+        /// <param name="handlerAction">The actual asynchronous action to perform for handling the SignalR message.</param>
+        /// <remarks>
+        /// This method sets <see cref="LogMdlcOperationId"/> and <see cref="LogMdlcTaskId"/> in the NLog MDLC
+        /// before executing <paramref name="handlerAction"/> and clears them in a finally block.
+        /// This ensures that logs generated during the handler's execution are contextually tagged.
+        /// It also provides centralized logging for the start, success, or failure of the handler action.
+        /// Catches <see cref="OperationCanceledException"/> specifically if related to service shutdown.
+        /// </remarks>
         private async Task HandleSignalRInvokeAsync(string? operationId, string? taskId, Func<Task> handlerAction)
         {
             bool opIdSetInMdlc = false;
@@ -674,7 +782,15 @@ namespace SiteKeeper.Slave
                 if (taskIdSetInMdlc) NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcTaskId);
             }
         }
-        
+
+        /// <summary>
+        /// Gets the current CPU usage percentage.
+        /// </summary>
+        /// <returns>CPU usage percentage, or -1.0 if the performance counter is not available (e.g., on non-Windows OS or due to an initialization error).</returns>
+        /// <remarks>
+        /// Relies on a <see cref="PerformanceCounter"/> for "Processor", "% Processor Time", "_Total".
+        /// The counter is initialized in <see cref="InitializePerformanceCounters"/>.
+        /// </remarks>
         private double GetCurrentCpuUsage() 
         {
             if (_cpuCounter == null)
@@ -693,6 +809,14 @@ namespace SiteKeeper.Slave
             }
         }
 
+        /// <summary>
+        /// Gets the current committed memory usage in bytes.
+        /// </summary>
+        /// <returns>Committed memory in bytes, or -1L if the performance counter is not available (e.g., on non-Windows OS or due to an initialization error).</returns>
+        /// <remarks>
+        /// Relies on a <see cref="PerformanceCounter"/> for "Memory", "Committed Bytes".
+        /// The counter is initialized in <see cref="InitializePerformanceCounters"/>.
+        /// </remarks>
         private long GetCurrentMemoryUsage()
         {
             if (_memoryCounter == null)
@@ -713,7 +837,11 @@ namespace SiteKeeper.Slave
         /// <summary>
         /// Calculates the current RAM usage as a percentage of total physical memory.
         /// </summary>
-        /// <returns>RAM usage percentage (0-100), or -1 if unable to calculate.</returns>
+        /// <returns>RAM usage percentage (0-100), or -1 if unable to calculate (e.g., counters not available or total memory not determined).</returns>
+        /// <remarks>
+        /// Uses the "Committed Bytes" performance counter (<see cref="_memoryCounter"/>) and the total physical memory
+        /// (<see cref="_totalMemoryBytes"/>, determined at startup) to calculate the percentage.
+        /// </remarks>
         private double GetCurrentRamUsagePercentage()
         {
             if (_memoryCounter == null || _totalMemoryBytes == 0)
@@ -731,6 +859,16 @@ namespace SiteKeeper.Slave
             return ((double)usedMemoryBytes / _totalMemoryBytes) * 100.0;
         }
 
+        /// <summary>
+        /// Gets the available free disk space in megabytes (MB) for the specified drive.
+        /// </summary>
+        /// <param name="driveName">The name or path of the drive to check (e.g., "C", "C:", "/mnt/data").</param>
+        /// <returns>Available free disk space in MB, or -1L if the drive name is invalid, the drive is not ready, or an error occurs.</returns>
+        /// <remarks>
+        /// This method attempts to normalize the <paramref name="driveName"/> to a root path suitable for <see cref="DriveInfo"/>.
+        /// For example, "C" becomes "C:\". It then uses <see cref="DriveInfo.AvailableFreeSpace"/> to get the value in bytes
+        /// and converts it to megabytes.
+        /// </remarks>
         private long GetAvailableDiskSpaceMb(string driveName) 
         {
             if (string.IsNullOrWhiteSpace(driveName))
@@ -769,6 +907,16 @@ namespace SiteKeeper.Slave
             }
         }
 
+        /// <summary>
+        /// Registers the slave agent with the Master Agent Hub.
+        /// </summary>
+        /// <param name="cancellationToken">A token to observe for cancellation requests.</param>
+        /// <remarks>
+        /// This method is called after a successful SignalR connection is established (or re-established).
+        /// It constructs a <see cref="SlaveRegistrationRequest"/> DTO with details about the slave agent
+        /// (name, version, OS, framework, max tasks, hostname) and invokes the <c>RegisterSlaveAsync</c>
+        /// method on the master hub. If registration is successful, it calls <see cref="StartTimers"/>.
+        /// </remarks>
         private async Task RegisterWithMasterAsync(CancellationToken cancellationToken)
         {
             if (_masterConnection?.State != HubConnectionState.Connected)
@@ -810,6 +958,10 @@ namespace SiteKeeper.Slave
             GC.SuppressFinalize(this);
         }
 
+        /// <summary>
+        /// Releases the unmanaged resources used by the <see cref="SlaveAgentService"/> and optionally releases the managed resources.
+        /// </summary>
+        /// <param name="disposing">true to release both managed and unmanaged resources; false to release only unmanaged resources.</param>
         protected virtual void Dispose(bool disposing)
         {
             if (disposing)
@@ -827,15 +979,40 @@ namespace SiteKeeper.Slave
         }
     }
 
+    /// <summary>
+    /// Implements the <see cref="IRetryPolicy"/> for SignalR client reconnections.
+    /// Defines a custom retry delay strategy for the slave agent when attempting to reconnect to the master.
+    /// </summary>
     public class SlaveHubReconnectPolicy : IRetryPolicy
     {
         private readonly ILogger _logger;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SlaveHubReconnectPolicy"/> class.
+        /// </summary>
+        /// <param name="logger">The logger instance used to log retry attempts and delays.</param>
         public SlaveHubReconnectPolicy(ILogger logger)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
+        /// <summary>
+        /// Calculates the time to wait before the next retry attempt based on the number of previous attempts.
+        /// </summary>
+        /// <param name="retryContext">Contextual information about the retry attempt, including the number of previous retries and the reason for the last failure.</param>
+        /// <returns>A <see cref="TimeSpan"/> representing the delay before the next retry, or <c>null</c> to stop retrying.</returns>
+        /// <remarks>
+        /// The retry delay increases with the number of attempts:
+        /// <list type="bullet">
+        ///   <item><description>Attempt 1 (PreviousRetryCount 0): 1 second</description></item>
+        ///   <item><description>Attempt 2 (PreviousRetryCount 1): 2 seconds</description></item>
+        ///   <item><description>Attempt 3 (PreviousRetryCount 2): 5 seconds</description></item>
+        ///   <item><description>Attempts 4-6 (PreviousRetryCount 3-5): 10 seconds</description></item>
+        ///   <item><description>Attempts 7-12 (PreviousRetryCount 6-11): 30 seconds</description></item>
+        ///   <item><description>Attempts 13+ (PreviousRetryCount 12+): 1 minute</description></item>
+        /// </list>
+        /// Each retry attempt and the calculated delay are logged.
+        /// </remarks>
         public TimeSpan? NextRetryDelay(RetryContext retryContext)
         {
             long previousRetryCount = retryContext.PreviousRetryCount;

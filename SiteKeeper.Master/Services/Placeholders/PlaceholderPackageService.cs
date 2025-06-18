@@ -10,17 +10,17 @@ using System;
 namespace SiteKeeper.Master.Services.Placeholders
 {
     /// <summary>
-    /// Placeholder implementation of the <see cref="IPackageService"/>.
+    /// Placeholder implementation of the <see cref="IPackageService"/> interface.
     /// This service provides mocked or sample data for package management functionalities
     /// for development and testing purposes before a real implementation is available.
     /// </summary>
     /// <remarks>
     /// The methods in this class simulate interactions with a package repository or manifest system.
     /// It returns predefined data that aligns with the expected DTO structures, including the
-    /// <see cref="PackageVersionsResponse"/> which now uses a simple list of version strings.
+    /// <see cref="PackageVersionsResponse"/> which uses a simple list of version strings.
     /// The sample data for installed packages uses the <see cref="NodePackageVersionStatus"/> DTO
-    /// to represent the node-specific version information, aligning with the structure of
-    /// the <c>PackageEnvironmentStatus</c> DTO's 'nodes' property.
+    /// to represent node-specific version information, aligning with the structure of
+    /// the <see cref="PackageEnvironmentStatus"/> DTO's 'nodes' property.
     /// </remarks>
     public class PlaceholderPackageService : IPackageService
     {
@@ -40,11 +40,13 @@ namespace SiteKeeper.Master.Services.Placeholders
 
         /// <summary>
         /// Initializes a new instance of the <see cref="PlaceholderPackageService"/> class.
+        /// Populates sample data for installed packages.
         /// </summary>
-        /// <param name="logger">The logger instance for this service.</param>
+        /// <param name="logger">The logger for recording service activity and placeholder notifications.</param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="logger"/> is null.</exception>
         public PlaceholderPackageService(ILogger<PlaceholderPackageService> logger)
         {
-            _logger = logger;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             // Initialize sample data for installed packages
             _sampleInstalledPackages = new List<PackageEnvironmentStatus>
             {
@@ -81,14 +83,13 @@ namespace SiteKeeper.Master.Services.Placeholders
         }
 
         /// <summary>
-        /// Lists all installed packages, applying optional filtering and sorting.
-        /// This is a placeholder implementation and currently returns a predefined list of sample packages.
-        /// Actual filtering and sorting logic would be more complex in a real service.
+        /// Placeholder implementation for listing installed packages, applying optional filtering and sorting.
+        /// Returns a predefined list of sample <see cref="PackageEnvironmentStatus"/> DTOs.
         /// </summary>
-        /// <param name="filterText">Text to filter package names by (case-insensitive contains).</param>
-        /// <param name="sortBy">Field to sort by (currently supports "packageName" or defaults to no sort).</param>
-        /// <param name="sortOrder">Sort order ("asc" or "desc").</param>
-        /// <returns>A list of <see cref="PackageEnvironmentStatus"/> objects representing installed packages.</returns>
+        /// <param name="filterText">Optional text to filter package names by (case-insensitive contains).</param>
+        /// <param name="sortBy">Optional field to sort by (currently supports "packageName"). Defaults to no specific sort if field is not "packageName".</param>
+        /// <param name="sortOrder">Optional sort order ("asc" or "desc"). Defaults to ascending if not "desc".</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains a list of predefined <see cref="PackageEnvironmentStatus"/> DTOs, potentially filtered and sorted.</returns>
         public Task<List<PackageEnvironmentStatus>> ListInstalledPackagesAsync(string? filterText, string? sortBy, string? sortOrder)
         {
             _logger.LogInformation("Listing installed packages with filter: '{FilterText}', sortBy: '{SortBy}', sortOrder: '{SortOrder}' (Placeholder).", filterText, sortBy, sortOrder);
@@ -114,15 +115,13 @@ namespace SiteKeeper.Master.Services.Placeholders
         }
 
         /// <summary>
-        /// Lists all available versions for a specific package name.
-        /// This placeholder implementation returns a predefined list of version strings for known packages.
-        /// The returned DTO <see cref="PackageVersionsResponse"/> now contains a simple list of strings for versions,
-        /// aligning with the updated Swagger definition.
+        /// Placeholder implementation for listing all available versions for a specific package name.
+        /// Returns a predefined list of version strings for known packages from an in-memory dictionary.
         /// </summary>
-        /// <param name="packageName">The name of the package for which to list versions.</param>
+        /// <param name="packageName">The name of the package for which to retrieve available versions.</param>
         /// <returns>
-        /// A <see cref="PackageVersionsResponse"/> containing the package name and its available versions as strings.
-        /// Returns null if the package name is not found in the sample data.
+        /// A task that represents the asynchronous operation. The task result contains a <see cref="PackageVersionsResponse"/> DTO
+        /// with the package name and its available versions as strings if the package is known; otherwise, null.
         /// </returns>
         public Task<PackageVersionsResponse?> ListPackageVersionsAsync(string packageName)
         {

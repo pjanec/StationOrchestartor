@@ -35,6 +35,20 @@ namespace SiteKeeper.IntegrationTests
         protected readonly string _journalRootPath;
         private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="OperationIntegrationTestBase"/> class.
+        /// </summary>
+        /// <param name="fixture">The xUnit collection fixture <see cref="SiteKeeperHostFixture"/>, providing the shared application host.</param>
+        /// <param name="output">The xUnit <see cref="ITestOutputHelper"/> for writing log output during test execution.</param>
+        /// <remarks>
+        /// This constructor initializes key components for integration tests:
+        /// - Stores the provided <paramref name="fixture"/> and <paramref name="output"/>.
+        /// - Creates and configures an <see cref="HttpClient"/> (<see cref="_client"/>) with the base address for the test host's GUI port.
+        /// - Retrieves essential services like <see cref="IJournalService"/> and configuration (<see cref="MasterConfig"/>)
+        ///   from the <paramref name="fixture"/>.AppHost's dependency injection container.
+        /// - Sets the <see cref="_journalRootPath"/> based on the test configuration for verifying journal entries.
+        /// - Calls <see cref="AuthenticateClient"/> to log in as a test user and obtain a JWT for API requests.
+        /// </remarks>
         public OperationIntegrationTestBase(SiteKeeperHostFixture fixture, ITestOutputHelper output)
         {
             _fixture = fixture;
@@ -53,6 +67,11 @@ namespace SiteKeeper.IntegrationTests
             AuthenticateClient().GetAwaiter().GetResult();
         }
 
+        /// <summary>
+        /// Authenticates the <see cref="_client"/> by logging in as a predefined test user ("advancedadmin")
+        /// and setting the JWT Bearer token in the default request headers.
+        /// </summary>
+        /// <exception cref="Exception">Throws an exception if authentication fails, as tests cannot proceed.</exception>
         private async Task AuthenticateClient()
         {
             try
@@ -180,6 +199,10 @@ namespace SiteKeeper.IntegrationTests
             return await File.ReadAllTextAsync(logFilePath);
         }
 
+        /// <summary>
+        /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
+        /// Specifically, it disposes the <see cref="HttpClient"/> instance used by the test class.
+        /// </summary>
         public void Dispose()
         {
             _client.Dispose();

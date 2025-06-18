@@ -6,7 +6,8 @@ namespace SiteKeeper.Shared.DTOs.API.Operations
     /// Represents the request to initiate an environment revert operation.
     /// </summary>
     /// <remarks>
-    /// This DTO is used to specify the target state to which the environment should be reverted.
+    /// This DTO is used to specify the target state to which the environment should be reverted,
+    /// typically sent to an endpoint like POST /operations/env-revert.
     /// The revert is based on a journal record, which represents a previously recorded "pure" state of the environment,
     /// typically captured after a successful update or other major change.
     /// This operation is powerful and potentially disruptive, requiring appropriate administrative privileges.

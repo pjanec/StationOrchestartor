@@ -429,6 +429,11 @@ namespace SiteKeeper.Slave.Services
             }
         }
 
+        /// <summary>
+        /// Maps the slave's internal <see cref="SlaveLocalTaskExecutionStatus"/> to the master-facing <see cref="NodeTaskStatus"/>.
+        /// </summary>
+        /// <param name="localStatus">The local status of the task on the slave.</param>
+        /// <returns>The corresponding <see cref="NodeTaskStatus"/> for reporting to the master.</returns>
         private NodeTaskStatus MapSlaveLocalStatusToNodeTaskStatus(SlaveLocalTaskExecutionStatus localStatus)
         {
             switch (localStatus)
@@ -447,6 +452,17 @@ namespace SiteKeeper.Slave.Services
 
         // Basic disk space check (platform-dependent ways are better for specific drives)
         // Consider refining this to use DriveInfo for specific drive if 'driveName' is a letter like "C" or path like "C:"
+        /// <summary>
+        /// Gets the available free disk space for the specified drive.
+        /// </summary>
+        /// <param name="drivePathOrLetter">A path or drive letter (e.g., "C:", "C", "/mnt/data").
+        /// If a path is provided, its root will be used. If only a letter (e.g., "C") is provided, it's assumed to be a drive letter.</param>
+        /// <returns>The available free space in bytes. Returns 0 if an error occurs or the drive cannot be determined.</returns>
+        /// <remarks>
+        /// This method attempts to determine the root of the given path to instantiate <see cref="DriveInfo"/>.
+        /// If <paramref name="drivePathOrLetter"/> is a single letter (e.g., "C"), it appends ":\" to form a valid root.
+        /// If the root cannot be determined or <see cref="DriveInfo"/> fails, it logs an error and returns 0.
+        /// </remarks>
         private long GetFreeDiskSpace(string drivePathOrLetter)
         {
             try

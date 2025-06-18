@@ -12,28 +12,69 @@ using System.Threading.Tasks;
 namespace SiteKeeper.Master.Workflow.ActionHandlers
 {
     /// <summary>
-    /// An IMasterActionHandler specifically for the 'OrchestrationTest' operation type.
-    /// This handler reads test parameters from the context to simulate various success
-    /// and failure scenarios on both the master and slave sides.
+    /// Implements <see cref="IMasterActionHandler"/> to orchestrate the <see cref="OperationType.OrchestrationTest"/>.
+    /// This handler is designed for end-to-end testing of the master-slave operation workflow.
     /// </summary>
+    /// <remarks>
+    /// It reads specific test parameters from the <see cref="MasterActionContext.Parameters"/>, such as
+    /// desired slave behavior (<see cref="SlaveBehaviorMode"/>) and master failure simulation points (<see cref="MasterFailureMode"/>).
+    /// It then constructs and executes a single-node operation using the <see cref="MultiNodeOperationStageHandler"/>,
+    /// where the <see cref="SlaveTaskType.TestOrchestration"/> task on the slave agent will enact the requested simulated behavior.
+    /// The handler also interacts with the <see cref="IJournalService"/> to record the test operation's lifecycle in the Change Journal.
+    /// This handler is critical for verifying the robustness of the operation coordination, error handling, cancellation, and timeout mechanisms.
+    /// </remarks>
     public class OrchestrationTestActionHandler : IMasterActionHandler
     {
         private readonly IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> _multiNodeHandler;
-        private readonly IAgentConnectionManagerService _agentConnectionManager;
+        private readonly IAgentConnectionManagerService _agentConnectionManager; // Kept for consistency, though OperationBuilder might be primary user now
         private readonly IJournalService _journalService;
 
+        /// <summary>
+        /// Gets the type of operation this handler is responsible for, which is <see cref="OperationType.OrchestrationTest"/>.
+        /// </summary>
         public OperationType Handles => OperationType.OrchestrationTest;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="OrchestrationTestActionHandler"/> class.
+        /// </summary>
+        /// <param name="multiNodeHandler">The stage handler for executing multi-node operations, used here for the single test task.</param>
+        /// <param name="agentConnectionManager">Service for agent communication details (though less directly used if OperationBuilder handles node selection).</param>
+        /// <param name="journalService">Service for recording system change events related to the test operation.</param>
         public OrchestrationTestActionHandler(
             IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> multiNodeHandler,
             IAgentConnectionManagerService agentConnectionManager,
             IJournalService journalService)
         {
             _multiNodeHandler = multiNodeHandler;
-            _agentConnectionManager = agentConnectionManager;
+            _agentConnectionManager = agentConnectionManager; // May not be directly used if OperationBuilder handles node discovery
             _journalService = journalService;
         }
 
+        /// <summary>
+        /// Executes the orchestration test workflow.
+        /// </summary>
+        /// <param name="context">The <see cref="MasterActionContext"/> providing workflow services and parameters for the test.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous execution of the workflow.</returns>
+        /// <remarks>
+        /// The workflow performs these main steps:
+        /// <list type="number">
+        ///   <item><description>Extracts and validates test parameters (<c>slaveBehavior</c>, <c>masterFailure</c>, <c>targetNodeName</c>, <c>customMessage</c>) from <see cref="MasterActionContext.Parameters"/>.</description></item>
+        ///   <item><description>Simulates master failure before any stage execution if <see cref="MasterFailureMode.ThrowBeforeFirstStage"/> is requested.</description></item>
+        ///   <item><description>Logs any provided <c>customMessage</c> to the master log.</description></item>
+        ///   <item><description>Initiates a <see cref="ChangeEventType.SystemEvent"/> record in the Change Journal for the test.</description></item>
+        ///   <item><description>Executes a "MultiNodeTestStage":
+        ///     <list type="bullet">
+        ///       <item><description>Constructs an <see cref="Operation"/> with a single <see cref="NodeTask"/> of type <see cref="SlaveTaskType.TestOrchestration"/>, targeted at the specified <c>targetNodeName</c>.</description></item>
+        ///       <item><description>The <see cref="NodeTask.TaskPayload"/> includes all original test parameters for the slave to interpret.</description></item>
+        ///       <item><description>Invokes the injected <see cref="_multiNodeHandler"/> to execute this operation.</description></item>
+        ///     </list>
+        ///   </description></item>
+        ///   <item><description>Simulates master failure after the main stage if <see cref="MasterFailureMode.ThrowAfterFirstStage"/> is requested.</description></item>
+        ///   <item><description>Based on the <see cref="MultiNodeOperationResult"/>, sets the final outcome (Succeeded, Failed, Cancelled) on the <paramref name="context"/>.</description></item>
+        ///   <item><description>Finalizes the Change Journal record with the test outcome.</description></item>
+        /// </list>
+        /// Exceptions during the workflow are caught to ensure the Change Journal record is finalized with a failure state, then re-thrown.
+        /// </remarks>
         public async Task ExecuteAsync(MasterActionContext context)
         {
             context.InitializeProgress(totalSteps: 2); // 1. Main test stage, 2. Finalization
