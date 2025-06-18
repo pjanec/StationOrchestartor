@@ -18,11 +18,39 @@ namespace SiteKeeper.Slave.Services.NLog2
     {
         private readonly ILogger<NLogTargetAssuranceService> _logger;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="NLogTargetAssuranceService"/> class.
+        /// </summary>
+        /// <param name="logger">The logger instance for this service, used for logging its actions.</param>
         public NLogTargetAssuranceService(ILogger<NLogTargetAssuranceService> logger)
         {
             _logger = logger;
         }
 
+        /// <summary>
+        /// Called when the application host is starting. This method ensures that the
+        /// <see cref="SiteKeeperMasterBoundTarget"/> is configured in NLog.
+        /// </summary>
+        /// <remarks>
+        /// The method performs the following steps:
+        /// 1. Checks if NLog configuration exists.
+        /// 2. Verifies if a target named "masterBoundTarget" of type <see cref="SiteKeeperMasterBoundTarget"/>
+        ///    is already registered in the NLog configuration.
+        /// 3. If the target is not found:
+        ///    a. Creates a new instance of <see cref="SiteKeeperMasterBoundTarget"/>, setting its name to "masterBoundTarget"
+        ///       and defining a layout (e.g., "${longdate}|${level:uppercase=true}|[SlaveTaskLog] ${message}").
+        ///    b. Configures the target to include Mapped Diagnostics Logical Context (MDLC) properties:
+        ///       "SK-OperationId", "SK-TaskId", and "SK-NodeName", which are crucial for contextualizing logs sent to the master.
+        ///    c. Adds the newly created target to the NLog configuration.
+        ///    d. Creates a new <see cref="LoggingRule"/> that directs logs from sources starting with
+        ///       <see cref="SiteKeeperMasterBoundTarget.ExecutiveLogPrefix"/> (e.g., "Executive.*")
+        ///       at <see cref="NLog.LogLevel.Debug"/> or higher to the "masterBoundTarget".
+        ///    e. Inserts this rule at the beginning of the logging rules collection to ensure it's processed with high priority.
+        ///    f. Applies the changes to the NLog configuration by calling <see cref="LogManager.ReconfigExistingLoggers()"/>.
+        /// 4. Logs whether the target was added or if it was already present.
+        /// </remarks>
+        /// <param name="cancellationToken">Indicates that the start process has been aborted.</param>
+        /// <returns>A <see cref="Task"/> that represents the asynchronous Start operation.</returns>
         public Task StartAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("Ensuring NLog 'SiteKeeperMasterBoundTarget' is configured...");
@@ -85,6 +113,12 @@ namespace SiteKeeper.Slave.Services.NLog2
             return Task.CompletedTask;
         }
 
+        /// <summary>
+        /// Called when the application host is performing a graceful shutdown.
+        /// This service does not require any specific actions during shutdown.
+        /// </summary>
+        /// <param name="cancellationToken">Indicates that the shutdown process should no longer be graceful.</param>
+        /// <returns>A <see cref="Task"/> that represents the asynchronous Stop operation.</returns>
         public Task StopAsync(CancellationToken cancellationToken)
         {
             // No-op for shutdown

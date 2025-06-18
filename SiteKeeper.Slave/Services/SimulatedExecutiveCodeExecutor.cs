@@ -15,9 +15,50 @@ namespace SiteKeeper.Slave.Services
     /// This class contains the logic to generate fake data and simulate work for different task types.
     /// It now reads parameters from the enhanced TestOpRequest DTO to simulate various behaviors.
     /// </summary>
+    /// <remarks>
+    /// This executor is crucial for testing the overall Master-Slave communication and task handling
+    /// workflow without needing actual complex task logic. It interprets parameters, primarily from
+    /// <see cref="TestOpRequest"/> (deserialized from <see cref="SlaveTaskInstruction.ParametersJson"/>
+    /// for tasks like <see cref="SlaveTaskType.TestOrchestration"/>), to simulate outcomes such as:
+    /// - Successful completion with progress reporting.
+    /// - Failure during execution.
+    /// - Timeouts (by delaying longer than typical master-side timeouts).
+    /// - Tasks that run until explicitly cancelled.
+    ///
+    /// The specific behavior is often determined by the <see cref="SlaveBehaviorMode"/>
+    /// specified in the <see cref="TestOpRequest"/>.
+    /// </remarks>
     public class SimulatedExecutiveCodeExecutor : IExecutiveCodeExecutor
     {
         /// <inheritdoc />
+        /// <summary>
+        /// Simulates the execution of a task based on the provided <paramref name="instruction"/>.
+        /// This implementation is designed for testing and development purposes.
+        /// </summary>
+        /// <remarks>
+        /// The simulation logic varies based on <see cref="SlaveTaskInstruction.TaskType"/>:
+        /// - For <see cref="SlaveTaskType.TestOrchestration"/>:
+        ///   It deserializes <see cref="TestOpRequest"/> from <see cref="SlaveTaskInstruction.ParametersJson"/>.
+        ///   The behavior is dictated by <see cref="TestOpRequest.SlaveBehavior"/>:
+        ///   - <see cref="SlaveBehaviorMode.Succeed"/>: Simulates successful execution with progress updates via <paramref name="reportProgressPercentAction"/>.
+        ///   - <see cref="SlaveBehaviorMode.FailOnExecute"/>: Simulates a failure by throwing an exception after partial progress.
+        ///   - <see cref="SlaveBehaviorMode.TimeoutOnExecute"/>: Simulates a task that runs longer than typical timeouts, eventually succeeding if not cancelled.
+        ///   - <see cref="SlaveBehaviorMode.CancelDuringExecute"/>: Simulates a task that runs indefinitely until a cancellation is requested via <see cref="SlaveTaskContext.CancellationTokenSource"/>.
+        ///   - If <see cref="TestOpRequest.CustomMessage"/> is provided, it's logged using <paramref name="taskSpecificLogger"/> and may be included in the result.
+        /// - For other <see cref="SlaveTaskType"/> values (e.g., <see cref="SlaveTaskType.VerifyConfiguration"/>):
+        ///   A generic successful execution with progress updates is simulated.
+        ///
+        /// Progress is reported using the <paramref name="reportProgressPercentAction"/> callback.
+        /// All simulation activities and outcomes are logged using the provided <paramref name="taskSpecificLogger"/>.
+        ///
+        /// The <see cref="SlaveTaskContext.FinalResultJson"/> property is populated with a JSON string
+        /// representing the outcome (e.g., success message, error details).
+        ///
+        /// If an <see cref="OperationCanceledException"/> occurs (typically due to master-initiated cancellation),
+        /// it's caught, a cancellation message is set in <see cref="SlaveTaskContext.FinalResultJson"/>,
+        /// and the exception is re-thrown to be handled by the <see cref="OperationHandler"/>, which then reports the "Cancelled" status.
+        /// Other exceptions are caught, and their details are serialized into <see cref="SlaveTaskContext.FinalResultJson"/>.
+        /// </remarks>
         public async Task<bool> ExecuteTaskAsync(
             SlaveTaskInstruction instruction,
             SlaveTaskContext slaveTaskContext,

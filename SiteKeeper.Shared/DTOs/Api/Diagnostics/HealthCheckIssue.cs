@@ -10,8 +10,10 @@ namespace SiteKeeper.Shared.DTOs.API.Diagnostics
     /// As defined in swagger: #/components/schemas/HealthCheckIssue
     /// </summary>
     /// <remarks>
-    /// This DTO is used to detail a specific problem found during diagnostics, including its name, severity,
-    /// a description of the issue, and potentially a suggested remediation or affected component.
+    /// This DTO is used to detail a specific problem found during diagnostics. It includes the issue's name, severity,
+    /// a description, and potentially a suggested remediation or affected component.
+    /// It may be part of a list within a <see cref="HealthCheckItem"/> or <see cref="NodeDiagnosticsReport"/>,
+    /// or pushed individually to clients via SignalR (e.g., through <see cref="Abstractions.GuiHub.IGuiHub.HealthCheckIssueFound"/>).
     /// Based on the HealthCheckIssue schema in `web api swagger.yaml`.
     /// </remarks>
     public class HealthCheckIssue

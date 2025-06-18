@@ -4,9 +4,12 @@ namespace SiteKeeper.Shared.Enums
 {
     /// <summary>
     /// Defines the severity levels for log entries, aligning with standard logging practices.
-    /// Used in OperationJournalEntry and potentially other logging DTOs.
     /// </summary>
     /// <remarks>
+    /// This enum is used in various DTOs that include log information, such as
+    /// <see cref="SiteKeeper.Shared.DTOs.API.Operations.OperationJournalEntry"/>,
+    /// <see cref="SiteKeeper.Shared.DTOs.AgentHub.SlaveTaskLogEntry"/>, and
+    /// <see cref="SiteKeeper.Shared.DTOs.SignalR.SignalROperationLogEntry"/>.
     /// Based on the LogLevel enum string values (Information, Warning, Error, Critical) defined in `web api swagger.yaml`.
     /// Serialization to string is handled by <see cref="JsonStringEnumConverter"/>.
     /// </remarks>

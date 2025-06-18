@@ -14,11 +14,32 @@ namespace SiteKeeper.Master.Workflow
     /// This reduces boilerplate code within IMasterActionHandler implementations by providing a
     /// standardized way to create an Operation object with a list of tasks targeting all nodes.
     /// </summary>
+    /// <remarks>
+    /// This class is primarily used by implementations of <see cref="IMasterActionHandler"/>
+    /// when a part of their workflow involves dispatching a common task to multiple, or typically all,
+    /// connected slave agents. It simplifies the creation of the <see cref="Operation"/>
+    /// data structure, which is then often processed by a <see cref="MultiNodeOperationStageHandler"/>
+    /// or a similar mechanism that iterates through <see cref="Operation.NodeTasks"/>.
+    /// </remarks>
     public static class OperationBuilder
     {
         /// <summary>
         /// Creates a new Operation object that targets all currently connected slave agents with a specified task.
         /// </summary>
+        /// <remarks>
+        /// The method performs the following steps:
+        /// 1. Initializes a new <see cref="Operation"/> object using the provided <paramref name="operationType"/>, <paramref name="operationName"/>,
+        ///    <paramref name="auditContext"/>, and user information from the <paramref name="context"/>.
+        /// 2. Retrieves all currently connected slave agents using the <paramref name="agentConnectionManager"/>.
+        /// 3. If no agents are connected, the method logs this information via the <paramref name="context"/> and returns the
+        ///    <see cref="Operation"/> with an empty <see cref="Operation.NodeTasks"/> list.
+        /// 4. For each connected agent, it creates a <see cref="NodeTask"/>.
+        ///    - The <see cref="NodeTask.TaskType"/> is set to the common <paramref name="slaveTaskType"/>.
+        ///    - The <see cref="NodeTask.TaskPayload"/> is determined by checking if a specific payload is provided for the agent's node name
+        ///      in <paramref name="nodeSpecificPayloads"/>. If not, an empty dictionary is used as the payload.
+        /// 5. Each created <see cref="NodeTask"/> is added to the <see cref="Operation.NodeTasks"/> list of the parent operation.
+        /// 6. Finally, it logs the successful creation of the operation and the number of tasks generated via the <paramref name="context"/>.
+        /// </remarks>
         /// <param name="context">The MasterActionContext of the running workflow, providing overall context like IDs and user info.</param>
         /// <param name="agentConnectionManager">The service used to retrieve the list of connected agents.</param>
         /// <param name="operationType">The high-level type of the operation being created (e.g., EnvVerify). This is used for journaling and context.</param>

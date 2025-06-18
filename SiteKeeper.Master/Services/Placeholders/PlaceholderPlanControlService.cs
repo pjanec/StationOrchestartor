@@ -10,26 +10,37 @@ using System;
 namespace SiteKeeper.Master.Services.Placeholders
 {
     /// <summary>
-    /// Placeholder implementation for <see cref="IPlanControlService"/>.
-    /// Provides example data for plan listings and simulates plan control operations.
+    /// Placeholder implementation of the <see cref="IPlanControlService"/> interface.
+    /// Provides simulated data and behavior for application plan management functionalities for development and testing.
     /// </summary>
     /// <remarks>
-    /// This service is intended for development and testing purposes.
-    /// In a production environment, this would interact with actual plan management logic,
-    /// potentially coordinating with an <see cref="IOperationCoordinatorService"/> for actions.
+    /// This service returns a predefined list of application plans and includes basic filtering and sorting capabilities.
+    /// In a real production environment, this service would interact with actual plan management logic and
+    /// would likely coordinate plan-based actions (start, stop, restart) via the <see cref="IMasterActionCoordinatorService"/>.
     /// </remarks>
     public class PlaceholderPlanControlService : IPlanControlService
     {
         private readonly ILogger<PlaceholderPlanControlService> _logger;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="PlaceholderPlanControlService"/> class.
+        /// </summary>
+        /// <param name="logger">The logger for recording service activity and placeholder notifications.</param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="logger"/> is null.</exception>
         public PlaceholderPlanControlService(ILogger<PlaceholderPlanControlService> logger)
         {
-            _logger = logger;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         /// <summary>
-        /// Lists all defined application plans with their current aggregated statuses (Placeholder).
+        /// Placeholder implementation for listing defined application plans and their current aggregated statuses.
+        /// Returns a predefined list of <see cref="PlanInfo"/> DTOs and applies basic filtering and sorting.
         /// </summary>
+        /// <param name="filterText">Optional text used to filter plans by Id, Name, or Description (case-insensitive contains).</param>
+        /// <param name="sortBy">Optional field name to sort the results by (e.g., "name", "status"). Defaults to sorting by name if not specified or invalid.</param>
+        /// <param name="sortOrder">Optional sort order ("asc" or "desc"). Defaults to ascending if not "desc".</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains a <see cref="PlanListResponse"/>
+        /// with a list of predefined <see cref="PlanInfo"/> DTOs, potentially filtered and sorted.</returns>
         public Task<PlanListResponse> ListPlansAsync(string? filterText, string? sortBy, string? sortOrder)
         {
             _logger.LogInformation("Listing plans with filter: '{FilterText}', sortBy: '{SortBy}', sortOrder: '{SortOrder}' (Placeholder).", filterText, sortBy, sortOrder);

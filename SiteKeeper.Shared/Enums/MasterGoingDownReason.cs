@@ -4,8 +4,11 @@ namespace SiteKeeper.Shared.Enums
 {
     /// <summary>
     /// Specifies the reason why the Master service is shutting down.
-    /// Used in SignalR notifications to clients.
     /// </summary>
+    /// <remarks>
+    /// This enum is used in the <see cref="SiteKeeper.Shared.DTOs.SignalR.SignalRMasterGoingDown"/> DTO
+    /// to inform connected SignalR clients about the cause of an impending Master service shutdown.
+    /// </remarks>
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public enum MasterGoingDownReason
     {

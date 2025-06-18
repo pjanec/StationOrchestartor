@@ -4,28 +4,31 @@ using System.Threading.Tasks;
 namespace SiteKeeper.Shared.Abstractions.GuiHub
 {
     /// <summary>
-    /// Defines the contract for methods that a GUI client can invoke on the Master's GuiHub (server).
+    /// Defines the contract for methods that a GUI client (client-side) can invoke on the Master's GuiHub (server-side).
+    /// The Master's GuiHub implements this interface to receive requests, commands, or messages from connected GUI clients.
     /// </summary>
     /// <remarks>
-    /// The Master Agent's GuiHub will implement these methods to receive requests and commands from GUI clients.
-    /// This interface is used for typed SignalR Hubs.
-    /// Based on "SiteKeeper Minimal API & SignalR Hub Handlers.md" and typical GUI interaction patterns.
+    /// This interface is primarily used for SignalR communication, where GUI clients initiate actions or requests to the Master.
+    /// Documentation based on "SiteKeeper Minimal API & SignalR Hub Handlers.md" and typical GUI interaction patterns.
     /// </remarks>
     public interface IGuiHubClient
     {
         /// <summary>
-        /// Allows a GUI client to send a test message to the server.
-        /// The server is expected to respond via <see cref="IGuiHub.ReceiveServerToClientTestResponse"/>.
+        /// Called by a GUI client to send a test message to the Master's GuiHub.
+        /// The Master is expected to process this message and respond via the <see cref="IGuiHub.ReceiveServerToClientTestResponse"/> method on the calling client.
         /// </summary>
-        /// <param name="request">The test request payload.</param>
-        /// <returns>A task representing the asynchronous handling of the test request.</returns>
+        /// <param name="request">Data transfer object containing the payload for the test message.</param>
+        /// <returns>A <see cref="Task"/> representing the asynchronous invocation of the method on the server.</returns>
         Task ClientToServerTest(SignalRClientToServerTestRequest request);
 
         /// <summary>
-        /// Allows a GUI client to request the current full environment status upon connection or refresh.
-        /// The server would respond by sending various status update messages via <see cref="IGuiHub"/> methods.
+        /// Called by a GUI client, typically upon initial connection or when a manual refresh is requested,
+        /// to ask the Master for the current, comprehensive status of the entire managed environment.
+        /// The Master would then respond by invoking various methods on <see cref="IGuiHub"/> (e.g.,
+        /// <see cref="IGuiHub.ReceiveNodeStatusUpdate"/>, <see cref="IGuiHub.ReceiveAppStatusUpdate"/>, etc.)
+        /// on the calling client to provide this information.
         /// </summary>
-        /// <returns>A task representing the asynchronous handling of the request.</returns>
+        /// <returns>A <see cref="Task"/> representing the asynchronous invocation of the method on the server.</returns>
         Task RequestFullEnvironmentStatus();
 
         // Other methods GUI might invoke:

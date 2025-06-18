@@ -41,10 +41,32 @@ using SiteKeeper.Master.Workflow.StageHandlers;
 
 namespace SiteKeeper.ConsoleHost
 {
+    /// <summary>
+    /// The main entry point for the SiteKeeper application.
+    /// This console host can run the Master components, Slave components, or both,
+    /// depending on the "SiteKeeperMode" configuration.
+    /// It handles application setup, configuration, logging, and service execution.
+    /// </summary>
     public class Program
     {
+        /// <summary>
+        /// Static NLog logger instance for use within the Program class, primarily for early startup logging.
+        /// </summary>
         private static NLog.Logger? _logger;
 
+        /// <summary>
+        /// The main entry point of the SiteKeeper application.
+        /// </summary>
+        /// <param name="args">Command-line arguments passed to the application.</param>
+        /// <remarks>
+        /// This method orchestrates the application startup by:
+        /// 1. Determining the content root path, adjusting for Windows Service context if necessary.
+        /// 2. Creating the <see cref="WebApplicationBuilder"/> using <see cref="CreateAppBuilder"/>, which configures services, logging, and application settings.
+        /// 3. Building the <see cref="WebApplication"/> instance from the builder.
+        /// 4. Configuring the HTTP request pipeline for Master components (if enabled) using <see cref="WebApplicationExtensions.ConfigureSiteKeeperPipeline"/>.
+        /// 5. Running the application, handling differences between console execution and Windows Service execution.
+        /// It includes global exception handling to log critical errors and ensures NLog shutdown.
+        /// </remarks>
         public static async Task Main(string[] args)
         {
             var pathToContentRoot = Directory.GetCurrentDirectory();
@@ -94,6 +116,34 @@ namespace SiteKeeper.ConsoleHost
         /// This method replaces the old CreateHostBuilder and consolidates all service
         /// and host configuration from Program.cs, MasterStartupService.cs, and MasterAppHost.cs.
         /// </summary>
+        /// <param name="args">Command-line arguments passed to the application. Used for configuration sources.</param>
+        /// <param name="contentRoot">The application's content root path. Used for resolving configuration files and other assets.</param>
+        /// <returns>A configured <see cref="WebApplicationBuilder"/> instance ready to build the <see cref="WebApplication"/>.</returns>
+        /// <remarks>
+        /// The method performs comprehensive setup:
+        /// <list type="number">
+        ///   <item><description>Initializes <see cref="WebApplication.CreateBuilder"/> with options.</description></item>
+        ///   <item><description>Configures application settings by loading from JSON files (appsettings.json, environment-specific), environment variables, and command-line arguments.</description></item>
+        ///   <item><description>Sets up NLog as the logging provider.</description></item>
+        ///   <item><description>Determines the operational mode ("All", "MasterOnly", "SlaveOnly") from configuration ("SiteKeeperMode").</description></item>
+        ///   <item><description>Conditionally configures Slave components if Slave mode is enabled:
+        ///     Registers <see cref="SlaveConfig"/>, <see cref="IExecutiveCodeExecutor"/> (with <see cref="SimulatedExecutiveCodeExecutor"/>),
+        ///     <see cref="SlaveAgentService"/> (as IHostedService), and <see cref="NLogTargetAssuranceService"/> (as IHostedService).
+        ///   </description></item>
+        ///   <item><description>Conditionally configures Master web host components if Master mode is enabled:
+        ///     Binds and registers <see cref="MasterConfig"/>.
+        ///     Configures Kestrel for dual ports (GUI and Agent) as specified in <see cref="MasterConfig"/>, including HTTPS setup
+        ///     with server certificate loading and optional client certificate validation for the Agent port.
+        ///     Registers Master services for Dependency Injection: core services (Journal, GUI Notifier, Agent Connection Manager, Node Health Monitor),
+        ///     placeholder services for various interfaces, <see cref="MasterNLogSetupService"/>, <see cref="MultiNodeOperationStageHandler"/>,
+        ///     <see cref="IMasterActionCoordinatorService"/> (with <see cref="MasterActionCoordinatorService"/>), and scans for <see cref="IMasterActionHandler"/> implementations.
+        ///     Configures SignalR with JSON enum conversion.
+        ///     Configures Swagger/OpenAPI for API documentation.
+        ///     Configures JWT Bearer authentication and authorization.
+        ///   </description></item>
+        ///   <item><description>Enables running as a Windows Service using <see cref="Host.UseWindowsService()"/>.</description></item>
+        /// </list>
+        /// </remarks>
         public static WebApplicationBuilder CreateAppBuilder(string[] args, string contentRoot)
         {
             var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -389,6 +439,19 @@ namespace SiteKeeper.ConsoleHost
             return builder;
         }
 
+        /// <summary>
+        /// Determines if the application is currently running in the context of a Windows Service.
+        /// </summary>
+        /// <returns>
+        /// <c>true</c> if the application is likely running as a Windows Service (parent process is 'services.exe');
+        /// otherwise, <c>false</c>. Returns <c>false</c> on non-Windows operating systems.
+        /// </returns>
+        /// <remarks>
+        /// This method provides a heuristic by checking the parent process name.
+        /// While the .NET Host's `UseWindowsService` and the `--service` argument are the primary mechanisms
+        /// for service integration, this check can be useful for determining content root or other specific adjustments.
+        /// It uses helper methods from <see cref="ProcessExtensions"/> to inspect the parent process.
+        /// </remarks>
         private static bool IsRunningAsWindowsService()
         {
             // This heuristic remains a valid way to check for service context if needed,
@@ -410,9 +473,22 @@ namespace SiteKeeper.ConsoleHost
         }
     }
 
-    // The ProcessExtensions helper class remains unchanged.
+    /// <summary>
+    /// Provides extension methods for inspecting <see cref="Process"/> objects,
+    /// primarily used to determine the parent process, which helps in identifying
+    /// if the application is running as a Windows service.
+    /// </summary>
     public static class ProcessExtensions
     {
+        /// <summary>
+        /// Finds the indexed name of a process (e.g., "processName#1") used by performance counters.
+        /// </summary>
+        /// <param name="processId">The ID of the process.</param>
+        /// <returns>The indexed process name if found; otherwise, <c>null</c>.</returns>
+        /// <remarks>
+        /// Performance counters use indexed names when multiple instances of the same process name exist.
+        /// This method iterates through these instances to find the one matching the given <paramref name="processId"/>.
+        /// </remarks>
          private static string? FindIndexedProcessName(int processId)
          {
             try
@@ -439,6 +515,14 @@ namespace SiteKeeper.ConsoleHost
             catch { return null; }
         }
 
+        /// <summary>
+        /// Finds the Process ID (PID) of the process that created the process identified by an indexed name.
+        /// </summary>
+        /// <param name="indexedProcessName">The indexed process name (e.g., "processName#1") obtained from performance counters.</param>
+        /// <returns>The parent <see cref="Process"/> object if found; otherwise, <c>null</c>.</returns>
+        /// <remarks>
+        /// This method uses the "Creating Process ID" performance counter to get the PID of the parent process.
+        /// </remarks>
         private static Process? FindPidFromIndexedProcessName(string indexedProcessName)
         {
             try
@@ -449,16 +533,45 @@ namespace SiteKeeper.ConsoleHost
             catch { return null; }
         }
 
+        /// <summary>
+        /// Gets the parent process of the current <see cref="Process"/>.
+        /// </summary>
+        /// <param name="process">The current process (extension method target).</param>
+        /// <returns>The parent <see cref="Process"/> if found; otherwise, <c>null</c>.</returns>
         public static Process? ParentProcess(this Process process)
         {
             return FindPidFromIndexedProcessName(FindIndexedProcessName(process.Id) ?? string.Empty);
         }
     }
 
-
-    // This class contains the pipeline logic moved from the Main method.
+    /// <summary>
+    /// Provides extension methods for <see cref="WebApplication"/> to configure the
+    /// HTTP request pipeline specific to SiteKeeper Master components.
+    /// </summary>
     public static class WebApplicationExtensions
     {
+        /// <summary>
+        /// Configures the HTTP request processing pipeline for the SiteKeeper application,
+        /// particularly for the Master components if they are enabled.
+        /// </summary>
+        /// <param name="app">The <see cref="WebApplication"/> instance to configure.</param>
+        /// <returns>The configured <see cref="WebApplication"/> instance for chaining.</returns>
+        /// <remarks>
+        /// This method checks if Master components are enabled ("SiteKeeperMode" is "All" or "MasterOnly").
+        /// If so, it configures the pipeline with:
+        /// <list type="bullet">
+        ///   <item><description>Swagger and SwaggerUI (in development environment).</description></item>
+        ///   <item><description>Exception handler (in non-development environments).</description></item>
+        ///   <item><description>Static file serving.</description></item>
+        ///   <item><description>Routing.</description></item>
+        ///   <item><description>Authentication and Authorization middleware.</description></item>
+        ///   <item><description>Mapping for SignalR hubs: <see cref="GuiHub"/> (on GUI port) and <see cref="AgentHub"/> (on Agent port),
+        ///   both constrained by their respective host/port configurations derived from <see cref="MasterConfig"/>.</description></item>
+        ///   <item><description>Mapping for API endpoints using <see cref="ApiEndpointsExtensions.MapSiteKeeperApiEndpoints"/>, constrained to the GUI host/port.</description></item>
+        ///   <item><description>A fallback to "index.html" for single-page application (SPA) support.</description></item>
+        /// </list>
+        /// If Master components are not enabled, it logs this and skips the pipeline configuration.
+        /// </remarks>
         public static WebApplication ConfigureSiteKeeperPipeline(this WebApplication app)
         {
             // It's good practice to get a logger instance here from the app's services.

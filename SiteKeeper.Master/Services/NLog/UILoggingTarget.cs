@@ -14,11 +14,14 @@ namespace SiteKeeper.Master.Services.NLog2
 {
     /// <summary>
     /// A custom NLog target designed to forward log events from the Master service to connected UI clients via SignalR.
-    /// It uses a high-performance, asynchronous producer/consumer queue (`System.Threading.Channels`) to ensure that
+    /// </summary>
+    /// <remarks>
+    /// It uses a high-performance, asynchronous producer/consumer queue (<see cref="System.Threading.Channels.Channel{T}"/>) to ensure that
     /// logging calls do not block application threads, while guaranteeing that logs are processed and sent in the exact
     /// order they were generated. This target specifically filters for logs that have a "MasterActionId" property
     /// in their Mapped Diagnostics Logical Context (MDLC), ensuring that only logs related to an active workflow are sent to the UI.
-    /// </summary>
+    /// This target is typically registered and configured by <see cref="MasterNLogSetupService"/>.
+    /// </remarks>
     [Target("UILoggingTarget")]
     public sealed class UILoggingTarget : TargetWithContext
     {
@@ -29,9 +32,10 @@ namespace SiteKeeper.Master.Services.NLog2
         private readonly Channel<object> _logQueue;
 
         /// <summary>
-        /// Initializes a new instance of the UILoggingTarget.
+        /// Initializes a new instance of the <see cref="UILoggingTarget"/> class.
         /// </summary>
-        /// <param name="serviceProvider">The application's IServiceProvider, used to resolve services like IGuiNotifierService.</param>
+        /// <param name="serviceProvider">The application's <see cref="IServiceProvider"/>, used to dynamically resolve services like <see cref="IGuiNotifierService"/> within a scope when processing log events.</param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="serviceProvider"/> is null.</exception>
         public UILoggingTarget(IServiceProvider serviceProvider)
         {
             _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
@@ -46,15 +50,20 @@ namespace SiteKeeper.Master.Services.NLog2
         }
 
         /// <summary>
-        /// This method is called by the NLog framework for every log message. It is designed to be extremely fast.
-        /// Its only job is to synchronously add the log message to the in-memory queue and return immediately.
-        /// This is the "producer" part of the pattern and it does not block the application thread.
+        /// Writes the logging event to the target. This method is called by the NLog framework for every log message that matches the rule for this target.
         /// </summary>
+        /// <remarks>
+        /// This implementation is designed to be extremely fast. Its only job is to synchronously add the <paramref name="logEvent"/>
+        /// (after capturing context properties) to an in-memory queue (<see cref="_logQueue"/>) and return immediately.
+        /// This non-blocking behavior ensures that application threads performing logging are not delayed.
+        /// The actual processing and forwarding of the log event occur asynchronously in <see cref="ProcessQueueAsync"/>.
+        /// </remarks>
+        /// <param name="logEvent">The <see cref="LogEventInfo"/> to be logged.</param>
         protected override void Write(LogEventInfo logEvent)
         {
             var props = GetAllProperties( logEvent ); // get mdlc properties for this log event
 
-			// save all to logEvent.Properties
+			// save all to logEvent.Properties, making them accessible to HandleLogEventAsync
 			foreach( var prop in props )
 			{
 				logEvent.Properties[prop.Key] = prop.Value;
@@ -64,10 +73,15 @@ namespace SiteKeeper.Master.Services.NLog2
         }
 
         /// <summary>
-        /// Provides a mechanism for the workflow engine to wait until all currently buffered logs have been sent.
-        /// This is crucial for synchronizing log streams between stages of a Master Action.
+        /// Provides a mechanism for other services (e.g., workflow engine) to ensure that all currently buffered
+        /// log messages have been processed and sent by this target.
+        /// This is crucial for synchronizing log streams, for example, between stages of a <see cref="MasterAction"/>.
         /// </summary>
-        /// <returns>A Task that completes only when the queue has been fully processed up to this point.</returns>
+        /// <returns>
+        /// A <see cref="Task"/> that completes only when the queue processing has caught up to the point
+        /// where <c>FlushAsync</c> was called. This is achieved by queueing a special marker (<see cref="TaskCompletionSource"/>)
+        /// and awaiting its completion.
+        /// </returns>
         public Task FlushAsync()
         {
             // Create a TaskCompletionSource, which is a controllable Task.
@@ -81,8 +95,11 @@ namespace SiteKeeper.Master.Services.NLog2
         }
 
         /// <summary>
-        /// A single, dedicated background task that continuously reads from the queue.
+        /// A single, dedicated background task that continuously reads from the <see cref="_logQueue"/>.
         /// It processes items one by one, which guarantees that logs are handled in the order they were received.
+        /// If an item is a <see cref="LogEventInfo"/>, it calls <see cref="HandleLogEventAsync"/>.
+        /// If an item is a <see cref="TaskCompletionSource"/> (from <see cref="FlushAsync"/>), it completes that task.
+        /// This loop runs until <see cref="ChannelWriter{T}.Complete()"/> is called on <see cref="_logQueue"/>'s writer, typically during <see cref="Dispose(bool)"/>.
         /// </summary>
         private async Task ProcessQueueAsync()
         {
@@ -172,17 +189,22 @@ namespace SiteKeeper.Master.Services.NLog2
         }
 
         /// <summary>
-        /// This method is called by NLog during application shutdown when LogManager.Shutdown() is invoked.
-        /// It's the critical step for gracefully terminating the background processing task.
+        /// This method is called by NLog during application shutdown when <see cref="LogManager.Shutdown()"/> is invoked,
+        /// or when the target is explicitly disposed. It ensures graceful termination of the background log processing task.
         /// </summary>
-        /// <param name="disposing">True if called from Dispose(), false if from a finalizer.</param>
+        /// <param name="disposing"><c>true</c> if called from <see cref="IDisposable.Dispose()"/> (managed resources should be disposed);
+        /// <c>false</c> if called from a finalizer (managed resources may have already been disposed).</param>
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
-                // Mark the channel's writer as complete. This signals to the consumer
-                // that no more items will ever be added to the queue.
+                // Mark the channel's writer as complete. This signals to the consumer task (_ProcessQueueAsync)
+                // that no more items will ever be added to the queue, allowing it to exit its loop cleanly
+                // after processing any remaining items.
                 _logQueue.Writer.Complete();
+                // Note: We don't explicitly wait for _ProcessQueueAsync to finish here,
+                // as NLog's shutdown process should allow some time for targets to flush.
+                // If ProcessQueueAsync encounters issues, it logs them internally.
             }
             base.Dispose(disposing);
         }

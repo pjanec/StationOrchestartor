@@ -13,20 +13,25 @@ using System.Threading.Tasks;
 namespace SiteKeeper.Master.Services.Placeholders
 {
     /// <summary>
-    /// Placeholder implementation of the IDiagnosticsService interface.
-    /// This refactored version interacts with the new Master Action workflow engine.
+    /// Placeholder implementation of the <see cref="IDiagnosticsService"/> interface for development and testing.
     /// </summary>
+    /// <remarks>
+    /// This service simulates diagnostic operations. For actions like running diagnostics or collecting logs,
+    /// it initiates a <see cref="MasterAction"/> via the <see cref="IMasterActionCoordinatorService"/>.
+    /// For informational methods such as listing health checks or diagnostic applications, it returns predefined static data.
+    /// </remarks>
     public class PlaceholderDiagnosticsService : IDiagnosticsService
     {
         private readonly ILogger<PlaceholderDiagnosticsService> _logger;
-        // The service now depends on the new top-level coordinator.
         private readonly IMasterActionCoordinatorService _masterActionCoordinator;
 
         /// <summary>
-        /// Initializes a new instance of the PlaceholderDiagnosticsService class.
+        /// Initializes a new instance of the <see cref="PlaceholderDiagnosticsService"/> class.
         /// </summary>
-        /// <param name="logger">The logger for this service.</param>
-        /// <param name="masterActionCoordinator">The new Master Action coordinator service, used to initiate diagnostic workflows.</param>
+        /// <param name="logger">The logger for recording service activity and placeholder notifications.</param>
+        /// <param name="masterActionCoordinator">The service responsible for coordinating master actions,
+        /// used here to initiate diagnostic-related workflows.</param>
+        /// <exception cref="ArgumentNullException">Thrown if logger or masterActionCoordinator is null.</exception>
         public PlaceholderDiagnosticsService(
             ILogger<PlaceholderDiagnosticsService> logger,
             IMasterActionCoordinatorService masterActionCoordinator)
@@ -36,53 +41,60 @@ namespace SiteKeeper.Master.Services.Placeholders
         }
 
         /// <summary>
-        /// Initiates a diagnostic run by starting a new Master Action.
+        /// Placeholder implementation for initiating a diagnostic run.
+        /// This method constructs an <see cref="OperationInitiateRequest"/> with <see cref="OperationType.RunStandardDiagnostics"/>
+        /// and uses the <see cref="IMasterActionCoordinatorService"/> to start the corresponding master action workflow.
         /// </summary>
-        /// <param name="request">The request detailing which checks to run and on which nodes.</param>
-        /// <param name="user">The user principal initiating the diagnostic run.</param>
-        /// <returns>An OperationInitiationResponse containing the ID of the new Master Action.</returns>
+        /// <param name="request">The <see cref="RunHealthChecksRequest"/> DTO detailing which checks to run and on which nodes.
+        /// Its properties (CheckIds, NodeNames, AllNodes) are mapped to the parameters of the initiated master action.</param>
+        /// <param name="user">The <see cref="ClaimsPrincipal"/> representing the user initiating the diagnostic run, used for auditing.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains an <see cref="OperationInitiationResponse"/>
+        /// with the ID of the initiated master action and a confirmation message.</returns>
         public async Task<OperationInitiationResponse> RunDiagnosticsAsync(RunHealthChecksRequest request, ClaimsPrincipal user)
         {
             var initiatedByUsername = user.GetUsername() ?? "unknown";
-            _logger.LogInformation("User '{InitiatedByUsername}' is initiating a diagnostic run.", initiatedByUsername);
+            _logger.LogInformation("User '{InitiatedByUsername}' is initiating a diagnostic run (Placeholder).", initiatedByUsername);
 
             var operationInitiateRequest = new OperationInitiateRequest
             {
                 OperationType = OperationType.RunStandardDiagnostics,
-                Description = "Standard Diagnostics Run",
+                Description = $"Standard Diagnostics Run initiated by {initiatedByUsername}",
                 Parameters = new Dictionary<string, object>
                 {
+                    // Ensure null collections are converted to empty lists for the parameters dictionary
                     { nameof(request.CheckIds), request.CheckIds ?? new List<string>() },
                     { nameof(request.NodeNames), request.NodeNames ?? new List<string>() },
-                    { nameof(request.AllNodes), request.AllNodes ?? false }
+                    { nameof(request.AllNodes), request.AllNodes ?? false } // Default AllNodes to false if null
                 }
             };
 
             try
             {
                 var masterAction = await _masterActionCoordinator.InitiateMasterActionAsync(operationInitiateRequest, user);
-                _logger.LogInformation("Successfully initiated 'RunStandardDiagnostics' Master Action with ID {MasterActionId}.", masterAction.Id);
+                _logger.LogInformation("Successfully initiated 'RunStandardDiagnostics' Master Action with ID {MasterActionId} (Placeholder).", masterAction.Id);
                 return new OperationInitiationResponse
                 {
                     OperationId = masterAction.Id,
-                    Message = "Diagnostic operation initiated successfully."
+                    Message = "Diagnostic operation initiated successfully via placeholder service."
                 };
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to initiate diagnostic master action.");
+                _logger.LogError(ex, "Failed to initiate diagnostic master action via placeholder service.");
                 return new OperationInitiationResponse
                 {
-                    OperationId = string.Empty,
+                    OperationId = string.Empty, // Indicate failure with an empty OperationId
                     Message = $"Failed to initiate diagnostic operation: {ex.Message}"
                 };
             }
         }
         
         /// <summary>
-        /// Lists available health checks with a detailed, hierarchical structure.
-        /// This version is restored from the original BE_19.txt code to provide rich sample data.
+        /// Placeholder implementation for listing available health checks.
+        /// Returns a predefined, static list of <see cref="HealthCheckItem"/> DTOs with a hierarchical structure.
         /// </summary>
+        /// <returns>A task that represents the asynchronous operation. The task result contains a <see cref="HealthCheckListResponse"/>
+        /// populated with static sample data.</returns>
         public Task<HealthCheckListResponse> ListAvailableHealthChecksAsync()
         {
             _logger.LogInformation("Placeholder: Listing available health checks with detailed hierarchy.");
@@ -126,17 +138,33 @@ namespace SiteKeeper.Master.Services.Placeholders
             return Task.FromResult(new HealthCheckListResponse { HealthChecks = checks });
         }
 
+        /// <summary>
+        /// Placeholder implementation for listing applications discoverable for diagnostics.
+        /// Returns a predefined, static list of <see cref="AppInfo"/> DTOs.
+        /// </summary>
+        /// <returns>A task that represents the asynchronous operation. The task result contains an <see cref="AppListResponse"/>
+        /// populated with static sample application information.</returns>
         public Task<AppListResponse> ListDiagnosticAppsAsync()
         {
             _logger.LogInformation("Placeholder: Listing discoverable applications for diagnostics.");
             var apps = new List<AppInfo>
             {
-                new AppInfo { Id = "app-main-svc", Name = "MainAppService" },
-                new AppInfo { Id = "app-data-proc", Name = "DataProcessorService" }
+                new AppInfo { Id = "app-main-svc", Name = "MainAppService", Description = "Core business logic application." },
+                new AppInfo { Id = "app-data-proc", Name = "DataProcessorService", Description = "Background data processing worker." }
             };
             return Task.FromResult(new AppListResponse { Apps = apps });
         }
 
+        /// <summary>
+        /// Placeholder implementation for retrieving data package types for a specific application.
+        /// Returns a static <see cref="AppDataPackageTypesResponse"/> for a predefined application ID ("app-main-svc")
+        /// and null for any other application ID.
+        /// </summary>
+        /// <param name="appId">The unique identifier of the application.</param>
+        /// <returns>
+        /// A task that represents the asynchronous operation. The task result contains an <see cref="AppDataPackageTypesResponse"/>
+        /// with sample data if <paramref name="appId"/> matches "app-main-svc"; otherwise, null.
+        /// </returns>
         public Task<AppDataPackageTypesResponse?> GetAppDataPackageTypesAsync(string appId)
         {
             _logger.LogInformation("Placeholder: Getting data package types for App ID: {AppId}", appId);
@@ -148,8 +176,8 @@ namespace SiteKeeper.Master.Services.Placeholders
                     AppName = "MainAppService",
                     DataPackageTypes = new List<AppDataPackageType>
                     {
-                        new AppDataPackageType { Id = "logs-error", Name = "Error Logs" },
-                        new AppDataPackageType { Id = "config-dump", Name = "Configuration Dump" }
+                        new AppDataPackageType { Id = "logs-error", Name = "Error Logs", Description = "Collects recent error log files." },
+                        new AppDataPackageType { Id = "config-dump", Name = "Configuration Dump", Description = "Dumps current application configuration." }
                     }
                 };
                 return Task.FromResult<AppDataPackageTypesResponse?>(response);
@@ -157,15 +185,35 @@ namespace SiteKeeper.Master.Services.Placeholders
             return Task.FromResult<AppDataPackageTypesResponse?>(null);
         }
 
+        /// <summary>
+        /// Placeholder implementation for initiating an operation to collect logs for a specific application.
+        /// This method constructs an <see cref="OperationInitiateRequest"/> with <see cref="OperationType.CollectAppLogs"/>
+        /// and uses the <see cref="IMasterActionCoordinatorService"/> to start the corresponding master action workflow.
+        /// </summary>
+        /// <param name="request">The <see cref="CollectLogsRequest"/> DTO detailing the application, data package type, and target nodes.
+        /// These details would be mapped into the parameters for the master action.</param>
+        /// <param name="user">The <see cref="ClaimsPrincipal"/> representing the user initiating the log collection, used for auditing.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains an <see cref="OperationInitiationResponse"/>
+        /// with the ID of the initiated master action and a confirmation message.</returns>
         public async Task<OperationInitiationResponse> CollectAppLogsAsync(CollectLogsRequest request, ClaimsPrincipal user)
         {
+            var initiatedByUsername = user.GetUsername() ?? "unknown";
+            _logger.LogInformation("User '{InitiatedByUsername}' is initiating log collection for AppId '{AppId}' (Placeholder).", initiatedByUsername, request.AppId);
+
              var initiateRequest = new OperationInitiateRequest
              {
                  OperationType = OperationType.CollectAppLogs,
-                 Parameters = new Dictionary<string, object> { /* ... populate from request ... */ }
+                 Description = $"Collect logs for AppId '{request.AppId}', PackageType '{request.DataPackageTypeId}', initiated by {initiatedByUsername}",
+                 Parameters = new Dictionary<string, object>
+                 {
+                    { nameof(request.AppId), request.AppId },
+                    { nameof(request.DataPackageTypeId), request.DataPackageTypeId },
+                    { nameof(request.NodeNames), request.NodeNames ?? new List<string>() },
+                    { nameof(request.AllNodes), request.AllNodes ?? false }
+                 }
              };
              var masterAction = await _masterActionCoordinator.InitiateMasterActionAsync(initiateRequest, user);
-             return new OperationInitiationResponse { OperationId = masterAction.Id, Message = "Log collection initiated."};
+             return new OperationInitiationResponse { OperationId = masterAction.Id, Message = "Log collection operation initiated successfully via placeholder service."};
         }
     }
 }

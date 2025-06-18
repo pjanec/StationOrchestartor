@@ -27,6 +27,16 @@ namespace SiteKeeper.IntegrationTests
     /// </summary>
     public class TestOperationIntegrationTests : OperationIntegrationTestBase
     {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="TestOperationIntegrationTests"/> class.
+        /// </summary>
+        /// <param name="fixture">The xUnit collection fixture <see cref="SiteKeeperHostFixture"/>, providing the shared application host.</param>
+        /// <param name="output">The xUnit <see cref="ITestOutputHelper"/> for writing log output during test execution.</param>
+        /// <remarks>
+        /// Calls the base constructor to set up common test infrastructure.
+        /// Includes a brief delay to allow the internal slave agent to establish a connection with the master
+        /// after the test host starts, ensuring readiness for subsequent test actions.
+        /// </remarks>
         public TestOperationIntegrationTests(SiteKeeperHostFixture fixture, ITestOutputHelper output)
             : base(fixture, output)
         {
