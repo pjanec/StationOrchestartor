@@ -20,7 +20,12 @@ namespace SiteKeeper.Shared.DTOs.API.Operations
         /// <summary>
         /// The handler will execute the first stage and then throw an exception.
         /// </summary>
-        ThrowAfterFirstStage
+        ThrowAfterFirstStage,
+
+        /// <summary>
+        /// The handler will execute the first stage and before it finishes, throw an exception.
+        /// </summary>
+        ThrowWithinFirstStage
     }
 
     /// <summary>
@@ -42,6 +47,10 @@ namespace SiteKeeper.Shared.DTOs.API.Operations
         /// The slave will report ready, but then fail during the main execution phase.
         /// </summary>
         FailOnExecute,
+        /// <summary>
+        /// The slave will report ready, but then throw during the main execution phase.
+        /// </summary>
+        ThrowOnExecute,
         /// <summary>
         /// The slave will not respond to the "Prepare for Task" instruction, forcing a timeout on the master.
         /// </summary>
@@ -100,5 +109,13 @@ namespace SiteKeeper.Shared.DTOs.API.Operations
         /// </summary>
         [JsonPropertyName("customMessage")]
         public string? CustomMessage { get; set; }
+
+        /// <summary>
+        /// If true, the test handler will execute two node actions in parallel
+        /// (one succeeding, one failing) to test concurrent aggregation.
+        /// If false or null, the standard single-action test is performed.
+        /// </summary>
+        [JsonPropertyName("runInParallel")]
+        public bool? RunInParallel { get; set; } = false;
     }
 }

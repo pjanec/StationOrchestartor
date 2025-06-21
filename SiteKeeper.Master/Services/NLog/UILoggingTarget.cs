@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using NLog;
+using NLog.Common;
 using NLog.Targets;
 using SiteKeeper.Master.Abstractions.Services;
 using SiteKeeper.Master.Abstractions.Workflow;
@@ -16,7 +17,7 @@ namespace SiteKeeper.Master.Services.NLog2
     /// A custom NLog target designed to forward log events from the Master service to connected UI clients via SignalR.
     /// It uses a high-performance, asynchronous producer/consumer queue (`System.Threading.Channels`) to ensure that
     /// logging calls do not block application threads, while guaranteeing that logs are processed and sent in the exact
-    /// order they were generated. This target specifically filters for logs that have a "MasterActionId" property
+    /// order they were generated. This target specifically filters for logs that have a "SK-MasterActionId" property
     /// in their Mapped Diagnostics Logical Context (MDLC), ensuring that only logs related to an active workflow are sent to the UI.
     /// </summary>
     [Target("UILoggingTarget")]
@@ -113,7 +114,7 @@ namespace SiteKeeper.Master.Services.NLog2
             try
             {
                 // Retrieve the MasterActionId directly from the NLog event properties (set by MDLC).
-                if (!logEvent.Properties.TryGetValue("MasterActionId", out var opIdObj) || opIdObj is not string masterActionId || string.IsNullOrEmpty(masterActionId))
+                if (!logEvent.Properties.TryGetValue("SK-MasterActionId", out var opIdObj) || opIdObj is not string masterActionId || string.IsNullOrEmpty(masterActionId))
                 {
                     // If there's no MasterActionId, it's not a log we need to journal or send to the UI.
                     return;
@@ -121,15 +122,15 @@ namespace SiteKeeper.Master.Services.NLog2
 
                 // We need to resolve services from a new DI scope because this is a long-running singleton task.
                 using var scope = _serviceProvider.CreateScope();
-                var guiNotifier = scope.ServiceProvider.GetRequiredService<IGuiNotifierService>();
-                var journalService = scope.ServiceProvider.GetRequiredService<IJournalService>();
+                var guiNotifier = scope.ServiceProvider.GetRequiredService<IGuiNotifier>();
+                var journalService = scope.ServiceProvider.GetRequiredService<IJournal>();
         
                 // We create a SlaveTaskLogEntry, which is what your existing
                 // IGuiNotifierService.NotifyOperationLogEntryAsync method expects.
                 var logEntryDto = new SlaveTaskLogEntry
                 {
                     // The UI expects an "OperationId", so we map our MasterActionId to it.
-                    OperationId = masterActionId, 
+                    ActionId = masterActionId, 
 
                     // For logs originating from the master, the TaskId is not directly applicable.
                     // We can reuse the MasterActionId or a special marker.
@@ -143,11 +144,41 @@ namespace SiteKeeper.Master.Services.NLog2
                     TimestampUtc = logEvent.TimeStamp.ToUniversalTime()
                 };
 
-                // *** THIS IS THE FIX - PART 2 ***
                 // Create two tasks: one to notify the UI and one to write to the journal.
                 // This allows them to run in parallel.
                 var notifyTask = guiNotifier.NotifyOperationLogEntryAsync(logEntryDto);
-                var journalTask = journalService.AppendToStageLogAsync(masterActionId, logEntryDto);
+
+                Task journalTask;
+                // FIX: Route master vs. slave logs to different journaling methods
+                if (logEntryDto.NodeName == "_master")
+                {
+                    // Extract the logical stage info for master logs
+                    logEvent.Properties.TryGetValue("SK-StageIndex", out var stageIndexObj);
+                    logEvent.Properties.TryGetValue("SK-StageName", out var stageNameObj);
+					
+                    int? stageIndex = null;
+					if( stageIndexObj is int index )
+					{
+						stageIndex = index;
+					}
+					else if( stageIndexObj is string strIndex && int.TryParse( strIndex, out index ) )
+					{
+						stageIndex = index;
+					}
+                    else if( stageIndexObj is not null )
+                    {
+                        InternalLogger.Warn( $"Invalid SK-StageIndex value: {stageIndexObj}. Expected int or string representation of int." );
+					}
+
+					// Use the master journaling method to append the log to the current stage
+					journalTask = journalService.AppendMasterLogToStageAsync(masterActionId, stageIndex, stageNameObj as string, logEntryDto);
+                }
+                else
+                {
+                    // Slave logs use the existing method
+                    journalTask = journalService.AppendSlaveLogToStageAsync(masterActionId, logEntryDto);
+                }
+
 
                 // Await both tasks to ensure the log is both sent and persisted before processing the next item.
                 await Task.WhenAll(notifyTask, journalTask);

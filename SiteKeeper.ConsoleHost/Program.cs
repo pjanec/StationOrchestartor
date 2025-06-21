@@ -37,7 +37,7 @@ using NLog.Fluent;
 using OperatingSystem = System.OperatingSystem;
 using Scrutor;
 using SiteKeeper.Master.Abstractions.Workflow;
-using SiteKeeper.Master.Workflow.StageHandlers;
+using SiteKeeper.Master.Workflow;
 
 namespace SiteKeeper.ConsoleHost
 {
@@ -134,7 +134,15 @@ namespace SiteKeeper.ConsoleHost
             {
                 _logger.Info("Slave Agent components will be configured and started as a Hosted Service.");
                 builder.Services.Configure<SlaveConfig>(builder.Configuration.GetSection("SlaveConfig"));
-                builder.Services.AddSingleton<IExecutiveCodeExecutor, SimulatedExecutiveCodeExecutor>();
+
+                // Automatically register all ISlaveTaskHandler implementations.
+                // This is the primary mechanism for adding new slave-side task logic.
+                builder.Services.Scan(scan => scan
+                    .FromAssemblyOf<ISlaveTaskHandler>() // Scans the SiteKeeper.Slave assembly
+                    .AddClasses(classes => classes.AssignableTo<ISlaveTaskHandler>())
+                    .AsImplementedInterfaces()
+                    .WithSingletonLifetime()); // Handlers are stateless
+                
                 builder.Services.AddHostedService<SlaveAgentService>();
                 builder.Services.AddHostedService<NLogTargetAssuranceService>();
             }
@@ -260,25 +268,26 @@ namespace SiteKeeper.ConsoleHost
                 _logger.Debug("Configuring Master services for DI...");
 
                 // Register the NLog setup service, which provides the UI logging target.
-                builder.Services.AddSingleton<MasterNLogSetupService>().AddHostedService(p => p.GetRequiredService<MasterNLogSetupService>());
+                builder.Services.AddSingleton<MasterNLogSetup>().AddHostedService(p => p.GetRequiredService<MasterNLogSetup>());
 
                 // Register the specialized stage handler for multi-node operations.
                 // 1. Register the concrete class as a singleton. This is required by AgentHub, which injects
                 //    the concrete type to access its public methods not defined on the interface.
-                builder.Services.AddSingleton<MultiNodeOperationStageHandler>();
+                builder.Services.AddSingleton<NodeActionDispatcher>();
                 
-                // 2. Register the IStageHandler interface to resolve to the same singleton instance.
+                // 2. Register the same interface to resolve to the same singleton instance.
                 //    This ensures that any service asking for the interface (like our action handlers)
                 //    and any service asking for the concrete class get the *exact same instance*,
                 //    preserving its state (e.g., the _activeOperations dictionary).
-                builder.Services.AddSingleton<IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult>>(sp =>
-                    sp.GetRequiredService<MultiNodeOperationStageHandler>());
+                builder.Services.AddSingleton<INodeActionDispatcher>(sp =>
+                    sp.GetRequiredService<NodeActionDispatcher>());
                 
-                builder.Services.AddSingleton<IJournalService, JournalService>();
-                builder.Services.AddSingleton<IGuiNotifierService, GuiNotifierService>();
-                builder.Services.AddSingleton<IAgentConnectionManagerService, AgentConnectionManagerService>();
-                builder.Services.AddSingleton<INodeHealthMonitorService, NodeHealthMonitorService>();
-                builder.Services.AddHostedService<MasterLifecycleNotifierService>();
+                builder.Services.AddSingleton<IJournal, Journal>();
+                builder.Services.AddSingleton<IGuiNotifier, GuiNotifier>();
+                builder.Services.AddSingleton<IAgentConnectionManager, AgentConnectionManager>();
+                builder.Services.AddSingleton<INodeHealthMonitor, NodeHealthMonitor>();
+                builder.Services.AddSingleton<IActionIdTranslator, ActionIdMappingService>();
+                builder.Services.AddHostedService<MasterLifecycleNotifier>();
 
                 // == START: Placeholder Service Registrations ==
                 // Registering placeholder implementations for development and testing.
@@ -361,12 +370,13 @@ namespace SiteKeeper.ConsoleHost
                 builder.Services.AddAuthorization();
 
                 // Register the new MasterActionCoordinatorService, injecting the real log flush provider.
-                builder.Services.AddSingleton<IMasterActionCoordinatorService>(sp =>
+                builder.Services.AddSingleton<IMasterActionCoordinator>(sp =>
                 {
-                    var logger = sp.GetRequiredService<ILogger<MasterActionCoordinatorService>>();
-                    var nlogSetupService = sp.GetRequiredService<MasterNLogSetupService>();
-                    var journalService = sp.GetRequiredService<IJournalService>();
-					return new MasterActionCoordinatorService(logger, sp, journalService, nlogSetupService);
+                    var logger = sp.GetRequiredService<ILogger<MasterActionCoordinator>>();
+                    var nlogSetupService = sp.GetRequiredService<MasterNLogSetup>();
+                    var journalService = sp.GetRequiredService<IJournal>();
+                    var actionIdTranslator = sp.GetRequiredService<IActionIdTranslator>();
+                    return new MasterActionCoordinator(logger, sp, journalService, nlogSetupService, actionIdTranslator);
                 });
 
                 // Automatically register all IMasterActionHandler implementations with a Scoped lifetime.
@@ -376,7 +386,10 @@ namespace SiteKeeper.ConsoleHost
                     .AddClasses(classes => classes.AssignableTo<IMasterActionHandler>())
                     .AsImplementedInterfaces()
                     .WithScopedLifetime());
+
+                builder.Services.AddScoped<IWorkflowLogger, SiteKeeper.Master.Workflow.WorkflowLogger>();
             }
+
 
             if (!runMaster && !runSlave)
             {

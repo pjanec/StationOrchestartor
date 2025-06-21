@@ -5,17 +5,17 @@ using System.ComponentModel.DataAnnotations;
 
 namespace SiteKeeper.Shared.DTOs.API.Operations
 {
-    /// <summary>
-    /// Represents the detailed status of a specific asynchronous operation.
-    /// This DTO is returned by the GET /api/v1/operations/{operationId} endpoint.
-    /// </summary>
-    /// <remarks>
-    /// This DTO provides comprehensive information including the operation's ID, name, type, overall status (which could be an ongoing or completed status),
-    /// start time, end time (if completed), progress, a list of target nodes with their individual task statuses, and recent log entries.
-    /// Based on the OperationStatusResponse schema in `web api swagger.yaml` and detailed in
-    /// "SiteKeeper - API - Detailed DTO Definitions.md".
-    /// </remarks>
-    public class OperationStatusResponse
+	/// <summary>
+	/// Represents the detailed status of a specific asynchronous operation.
+	/// This DTO is returned by the GET /api/v1/operations/{operationId} endpoint.
+	/// </summary>
+	/// <remarks>
+	/// This DTO provides comprehensive information including the operation's ID, name, type, overall status (which could be an ongoing or completed status),
+	/// start time, end time (if completed), progress, a list of target nodes with their individual task statuses, and recent log entries.
+	/// Based on the OperationStatusResponse schema in `web api swagger.yaml` and detailed in
+	/// "SiteKeeper - API - Detailed DTO Definitions.md".
+	/// </remarks>
+	public class OperationStatusResponse
     {
         /// <summary>
         /// The unique identifier of the operation.
@@ -71,61 +71,45 @@ namespace SiteKeeper.Shared.DTOs.API.Operations
         public Dictionary<string, object>? Parameters { get; set; }
 
         /// <summary>
-        /// The status of tasks executed on each individual node as part of this operation.
+        /// A structured list of all stages that have executed as part of this operation.
+        /// Replaces the previous flat list of NodeTasks.
         /// </summary>
-        public List<OperationNodeTaskStatus> NodeTasks { get; set; } = new List<OperationNodeTaskStatus>();
+        public List<StageStatusInfo> Stages { get; set; } = new List<StageStatusInfo>();
 
-        /// <summary>
-        /// A list of recent log messages related to the operation, useful for quick diagnostics.
-        /// </summary>
-        public List<string> RecentLogs { get; set; } = new List<string>();
+		/// <summary>
+		/// The final result payload of the operation, if applicable.
+		/// Must be convertible to json.
+		/// For operations running a task on multiple nodes, this could be a summary of results.
+		/// </summary>
+		public object? ResultPayload { get; set; }
+
+		/// <summary>
+		/// A list of recent log messages related to the operation, useful for quick diagnostics.
+		/// </summary>
+		public List<string> RecentLogs { get; set; } = new List<string>();
     }
 
+
     /// <summary>
-    /// Represents the status of a single task performed on a specific node
-    /// as part of a larger operation.
+    /// Represents the status of a single stage within a larger operation.
+    /// This DTO is part of the structured OperationStatusResponse.
     /// </summary>
-    /// <remarks>
-    /// This DTO is used within <see cref="OperationStatusResponse"/> to detail the progress
-    /// and outcome of an operation on a per-node basis.
-    /// </remarks>
-    public class OperationNodeTaskStatus
+    public class StageStatusInfo
     {
-        /// <summary>
-        /// The name of the node where the task was executed.
-        /// </summary>
-        /// <example>"AppServer01"</example>
         [Required]
-        public string NodeName { get; set; } = string.Empty;
-
-        /// <summary>
-        /// The status of this specific task (e.g., "Running", "Succeeded", "Failed").
-        /// </summary>
-        /// <example>"InProgress" or "Succeeded"</example>
+        public int StageIndex { get; set; }
+        
         [Required]
-        public string TaskStatus { get; set; } = string.Empty; // Represents NodeTaskStatus as string
+        public string StageName { get; set; } = string.Empty;
+
+        [Required]
+        public bool IsSuccess { get; set; }
 
         /// <summary>
-        /// An optional message providing more details about the task's status (e.g., an error message).
+        /// The list of all tasks that were executed within this stage,
+        /// including their final status and results.
         /// </summary>
-        /// <example>"Package verification completed successfully."</example>
-        public string? Message { get; set; }
-
-        /// <summary>
-        /// The time the task started execution.
-        /// </summary>
-        public DateTime? TaskStartTime { get; set; }
-
-        /// <summary>
-        /// The time the task finished execution. Null if it is still running.
-        /// </summary>
-        public DateTime? TaskEndTime { get; set; }
-
-        /// <summary>
-        /// A JSON object representing the detailed results or output from the task execution.
-        /// The structure of this object is task-specific.
-        /// </summary>
-		public Dictionary<string, object>? ResultPayload { get; set; }
-
+        [Required]
+        public List<OperationNodeTaskStatus> NodeTasks { get; set; } = new List<OperationNodeTaskStatus>();
     }
 } 

@@ -50,8 +50,8 @@ namespace SiteKeeper.Slave.Services.NLog2
 
                 masterTarget.ContextProperties.Add(new TargetPropertyWithContext
                 {
-                    Name = "SK-OperationId",
-                    Layout = "${mdlc:item=SK-OperationId}"
+                    Name = "SK-ActionId",
+                    Layout = "${mdlc:item=SK-ActionId}"
                 });
                 masterTarget.ContextProperties.Add(new TargetPropertyWithContext
                 {

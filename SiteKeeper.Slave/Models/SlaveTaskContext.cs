@@ -32,7 +32,7 @@ namespace SiteKeeper.Slave.Models // Or SiteKeeper.Shared.Models
     /// <remarks>
     /// This class holds all relevant information for a task's lifecycle on the slave,
     /// including the initial instruction, current status, cancellation token, and results.
-    /// It is used by the <see cref="Services.OperationHandler"/> and potentially by the <see cref="Abstractions.IExecutiveCodeExecutor"/>.
+    /// It is used by the <see cref="Services.SlaveCommandsHandler"/> and potentially by the <see cref="Abstractions.IExecutiveCodeExecutor"/>.
     /// </remarks>
     public class SlaveTaskContext
     {

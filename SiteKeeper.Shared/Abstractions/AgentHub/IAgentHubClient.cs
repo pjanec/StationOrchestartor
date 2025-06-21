@@ -39,12 +39,12 @@ namespace SiteKeeper.Shared.Abstractions.AgentHub
         Task ReportResourceUsageAsync(SlaveResourceUsage resourceUsage);
 
         /// <summary>
-        /// Confirms that a log flush for a specific operation has been completed on the slave.
+        /// Confirms that a log flush for a specific action has been completed on the slave.
         /// This is called by the agent in response to a RequestLogFlushForTask from the master.
         /// </summary>
-        /// <param name="operationId">The unique identifier of the operation that was flushed.</param>
+        /// <param name="actionId">The unique identifier of the operation that was flushed.</param>
         /// <param name="nodeName">The name of the node that completed the flush.</param>
-        Task ConfirmLogFlushForTask(string operationId, string nodeName);
+        Task ConfirmLogFlushForTask(string actionId, string nodeName);
 
         /// <summary>
         /// Reports a log entry from a slave task to the master.

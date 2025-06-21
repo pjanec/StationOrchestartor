@@ -9,12 +9,17 @@ namespace SiteKeeper.Shared.DTOs.SignalR
     public class SignalROperationLogEntry
     {
         /// <summary>
-        /// The ID of the operation this log entry belongs to.
+        /// The ID of the parent Master Action this log entry belongs to.
         /// </summary>
         public string OperationId { get; set; }
 
         /// <summary>
-        /// The ID of the task this log entry belongs to.
+        /// The ID of the stage's NodeAction this log entry belongs to.
+        /// </summary>
+        public string NodeActionId { get; set; }
+
+        /// <summary>
+        /// The ID of the specific task on a node this log entry belongs to.
         /// </summary>
         public string TaskId { get; set; }
 

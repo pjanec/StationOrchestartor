@@ -10,10 +10,10 @@ namespace SiteKeeper.Shared.DTOs.MasterSlave
     public class SlaveTaskReadinessReport
     {
         /// <summary>
-        /// The unique identifier of the overall operation this report pertains to.
+        /// The unique identifier of the overall action this report pertains to.
         /// </summary>
         [Required]
-        public string OperationId { get; set; } = string.Empty;
+        public string ActionId { get; set; } = string.Empty;
 
         /// <summary>
         /// The unique identifier of the specific task this readiness report is for.

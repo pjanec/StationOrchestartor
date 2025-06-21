@@ -81,7 +81,7 @@ namespace SiteKeeper.Master.Web.Apis
 
             foreach (var action in appActions)
             {
-                appsGroup.MapPost("/{appId}/" + action.Key, async (string appId, [FromServices] IMasterActionCoordinatorService masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
+                appsGroup.MapPost("/{appId}/" + action.Key, async (string appId, [FromServices] IMasterActionCoordinator masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
                 {
                     if (!user.IsOperatorOrHigher()) return Results.Forbid();
                     var username = user.GetUsername();
@@ -117,7 +117,7 @@ namespace SiteKeeper.Master.Web.Apis
 
             foreach (var action in planActions)
             {
-                plansGroup.MapPost("/{planId}/" + action.Key, async (string planId, [FromServices] IMasterActionCoordinatorService masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
+                plansGroup.MapPost("/{planId}/" + action.Key, async (string planId, [FromServices] IMasterActionCoordinator masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
                 {
                     if (!user.IsOperatorOrHigher()) return Results.Forbid();
                     var username = user.GetUsername();

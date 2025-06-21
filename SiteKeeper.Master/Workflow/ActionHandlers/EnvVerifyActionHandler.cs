@@ -1,23 +1,16 @@
-using SiteKeeper.Master.Abstractions.Services;
 using SiteKeeper.Master.Abstractions.Workflow;
 using SiteKeeper.Shared.Enums;
 using System.Threading.Tasks;
-using System.Collections.Generic;
+using System;
 
 namespace SiteKeeper.Master.Workflow.ActionHandlers
 {
     public class EnvVerifyActionHandler : IMasterActionHandler
     {
-        private readonly IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> _multiNodeHandler;
-        private readonly IAgentConnectionManagerService _agentConnectionManager;
         public OperationType Handles => OperationType.EnvVerify;
 
-        public EnvVerifyActionHandler(
-            IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> multiNodeHandler,
-            IAgentConnectionManagerService agentConnectionManager)
+        public EnvVerifyActionHandler()
         {
-            _multiNodeHandler = multiNodeHandler;
-            _agentConnectionManager = agentConnectionManager;
         }
 
         public async Task ExecuteAsync(MasterActionContext context)
@@ -27,26 +20,20 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
 
             try
             {
-                await context.BeginStageAsync("Verification");
-
-                var operationToRun = await OperationBuilder.CreateOperationForAllNodesAsync(
-                    context: context,
-                    agentConnectionManager: _agentConnectionManager,
-                    operationType: OperationType.EnvVerify,
-                    operationName: "Environment Verification Stage",
-                    slaveTaskType: SlaveTaskType.VerifyConfiguration
-                );
-
-                var input = new MultiNodeOperationInput { OperationToExecute = operationToRun };
-                var result = await _multiNodeHandler.ExecuteAsync(input, context, context.StageProgress, context.CancellationToken);
-
-                context.MasterAction.CurrentStageOperation = result.FinalOperationState;
-                if (!result.IsSuccess)
-                    throw new System.Exception("Environment verification stage failed.");
+                await using (var stage = await context.BeginStageAsync("Verification", subActionCount: 1))
+                {
+                    var result = await stage.CreateAndExecuteNodeActionAsync(
+                        actionName: "Environment Verification Stage",
+                        slaveTaskType: SlaveTaskType.VerifyConfiguration
+                    );
+                    
+                    if (!result.IsSuccess)
+                        throw new Exception("Environment verification stage failed.");
+                }
 
                 context.SetCompleted("Environment Verification completed successfully.");
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 context.SetFailed(ex.Message);
             }

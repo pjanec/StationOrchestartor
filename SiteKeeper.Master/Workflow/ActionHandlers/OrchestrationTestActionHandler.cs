@@ -1,6 +1,8 @@
+// SiteKeeper.Master/Workflow/ActionHandlers/OrchestrationTestActionHandler.cs
+
 using SiteKeeper.Master.Abstractions.Services;
+using SiteKeeper.Master.Abstractions.Services.Journaling;
 using SiteKeeper.Master.Abstractions.Workflow;
-using SiteKeeper.Master.Model.InternalData;
 using SiteKeeper.Shared.DTOs.API.Operations;
 using SiteKeeper.Shared.Enums;
 using System;
@@ -14,161 +16,210 @@ namespace SiteKeeper.Master.Workflow.ActionHandlers
     /// <summary>
     /// An IMasterActionHandler specifically for the 'OrchestrationTest' operation type.
     /// This handler reads test parameters from the context to simulate various success
-    /// and failure scenarios on both the master and slave sides.
+    /// and failure scenarios on both the master and slave sides, using the new StageContext pattern.
     /// </summary>
     public class OrchestrationTestActionHandler : IMasterActionHandler
     {
-        private readonly IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> _multiNodeHandler;
-        private readonly IAgentConnectionManagerService _agentConnectionManager;
-        private readonly IJournalService _journalService;
+        private readonly IJournal _journalService;
 
+        /// <summary>
+        /// Gets the specific API operation type that this handler is responsible for.
+        /// </summary>
         public OperationType Handles => OperationType.OrchestrationTest;
 
-        public OrchestrationTestActionHandler(
-            IStageHandler<MultiNodeOperationInput, MultiNodeOperationResult> multiNodeHandler,
-            IAgentConnectionManagerService agentConnectionManager,
-            IJournalService journalService)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="OrchestrationTestActionHandler"/> class.
+        /// With the new StageContext architecture, this handler only needs the IJournal service
+        /// for creating high-level change records. Other services are resolved by the StageContext itself.
+        /// </summary>
+        public OrchestrationTestActionHandler(IJournal journalService)
         {
-            _multiNodeHandler = multiNodeHandler;
-            _agentConnectionManager = agentConnectionManager;
             _journalService = journalService;
         }
 
+        /// <summary>
+        /// Executes the entire test workflow. It parses parameters from the initial request,
+        /// simulates master-side failures if requested, and uses a StageContext to execute
+        /// a NodeAction that instructs the slave on how to behave.
+        /// </summary>
         public async Task ExecuteAsync(MasterActionContext context)
         {
-            context.InitializeProgress(totalSteps: 2); // 1. Main test stage, 2. Finalization
             context.LogInfo("Starting Orchestration Test workflow...");
+            context.InitializeProgress(totalSteps: 1); // This entire handler represents one logical step.
 
-            // --- 1. Extract and Validate Parameters ---
-            // The parameters are deserialized from the API request into the context's dictionary.
-            // We need to safely extract and parse them.
+            #region Parameter Extraction and Validation
+
+            // Safely extract and parse all parameters from the context.
+            // When deserialized from JSON, numeric values become JsonElement of kind Number,
+            // booleans become kind True/False, and enums become kind String.
+            // We need to handle these conversions robustly.
+
+            // Extract SlaveBehaviorMode
             if (!context.Parameters.TryGetValue("slaveBehavior", out var slaveBehaviorObj) || !Enum.TryParse<SlaveBehaviorMode>(slaveBehaviorObj.ToString(), out var slaveBehavior))
             {
                 context.SetFailed("Invalid or missing 'slaveBehavior' parameter for OrchestrationTest.");
                 return;
             }
 
+            // Extract MasterFailureMode
             if (!context.Parameters.TryGetValue("masterFailure", out var masterFailureObj) || !Enum.TryParse<MasterFailureMode>(masterFailureObj.ToString(), out var masterFailure))
             {
                 context.SetFailed("Invalid or missing 'masterFailure' parameter for OrchestrationTest.");
                 return;
             }
-            
+
+            // Extract TargetNodeName
             context.Parameters.TryGetValue("targetNodeName", out var targetNodeNameObj);
-            var targetNodeName = targetNodeNameObj?.ToString();
+            var targetNodeName = (targetNodeNameObj as JsonElement?)?.GetString() ?? targetNodeNameObj?.ToString();
             if (string.IsNullOrEmpty(targetNodeName))
             {
-                context.SetFailed("Missing 'targetNodeName' parameter for OrchestrationTest.");
+                context.SetFailed("Invalid or missing 'targetNodeName' parameter for OrchestrationTest.");
                 return;
             }
+            
+            #endregion
 
-            // --- 2. Simulate Master Failure (Before any stages) ---
+            // First, check for immediate failure simulation BEFORE creating any journal records.
             if (masterFailure == MasterFailureMode.ThrowBeforeFirstStage)
             {
                 context.LogInfo("SIMULATOR: Throwing exception before any stage as requested by MasterFailureMode.");
                 throw new InvalidOperationException("Simulated master failure before first stage.");
             }
-
-            // --- 3. Log Custom Message (if provided) ---
-            // This is used for testing master-side logging.
+            
+            // Log any custom message passed in the parameters for testing master-side logging.
             if (context.Parameters.TryGetValue("customMessage", out var customMessageObj))
             {
-                string? customMessage = null;
-                if (customMessageObj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.String)
-                {
-                    customMessage = jsonElement.GetString();
-                }
-                else if (customMessageObj is string str) 
-                {
-                    customMessage = str;
-                }
-
+                var customMessage = (customMessageObj as JsonElement?)?.GetString() ?? customMessageObj?.ToString();
                 if (!string.IsNullOrEmpty(customMessage))
                 {
                     context.LogInfo($"MASTER-LOG: {customMessage}");
                 }
             }
 
-            // We create a journaled system event for this test run.
-            var changeRecord = await _journalService.InitiateStateChangeAsync(new Abstractions.Services.Journaling.StateChangeInfo
+            // Now, create the journal record since immediate failure was not requested.
+            var changeRecord = await _journalService.InitiateStateChangeAsync(new StateChangeInfo
             {
-                Type = Abstractions.Services.Journaling.ChangeEventType.SystemEvent,
+                Type = ChangeEventType.SystemEvent,
                 Description = $"Initiating orchestration test (Master: {masterFailure}, Slave: {slaveBehavior})",
                 InitiatedBy = context.MasterAction.InitiatedBy ?? "system-test",
                 SourceMasterActionId = context.MasterActionId
             });
 
+            var testOpRequest = JsonSerializer.Deserialize<TestOpRequest>(
+                JsonSerializer.Serialize(context.Parameters), 
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+            ) ?? new TestOpRequest();
+
+
+
             try
             {
-                // --- 4. Execute the Multi-Node Stage ---
-                await context.BeginStageAsync("MultiNodeTestStage");
-
-                var operationToRun = new Operation(
-                    id: $"op-test-{Guid.NewGuid():N}",
-                    type: OperationType.OrchestrationTest,
-                    name: "Orchestration Test Stage",
-                    initiatedBy: context.MasterAction.InitiatedBy);
-
-                var taskPayload = new Dictionary<string, object>(context.Parameters);
-                var nodeTask = new NodeTask(
-                    taskId: $"{operationToRun.Id}-{targetNodeName}",
-                    operationId: operationToRun.Id,
-                    nodeName: targetNodeName,
-                    taskType: SlaveTaskType.TestOrchestration,
-                    taskPayload: taskPayload
-                );
-                operationToRun.NodeTasks.Add(nodeTask);
-
-                var multiNodeInput = new MultiNodeOperationInput { OperationToExecute = operationToRun };
-                var multiNodeResult = await _multiNodeHandler.ExecuteAsync(multiNodeInput, context, context.StageProgress, context.CancellationToken);
-
-                context.MasterAction.CurrentStageOperation = multiNodeResult.FinalOperationState;
-                await context.CompleteStageAsync(multiNodeResult);
-
-                // --- 5. Simulate Master Failure (After first stage) ---
-                if (masterFailure == MasterFailureMode.ThrowAfterFirstStage)
+                // Check if we are running the new parallel test mode.
+                if (testOpRequest.RunInParallel == true)
                 {
-                    context.LogInfo("SIMULATOR: Throwing exception after first stage as requested by MasterFailureMode.");
-                    throw new InvalidOperationException("Simulated master failure after first stage.");
+                    await using (var stage = await context.BeginStageAsync("Parallel Action Stage"))
+                    {
+                        var parallelActionInputs = new List<NodeActionInput>
+                        {
+                            new (
+                                ActionName: "Succeeding Parallel Action",
+                                SlaveTaskType: SlaveTaskType.TestOrchestration,
+                                NodeSpecificPayloads: new() { { "InternalTestSlave", new() { { "slaveBehavior", SlaveBehaviorMode.Succeed } } } }
+                            ),
+                            new (
+                                ActionName: "Failing Parallel Action",
+                                SlaveTaskType: SlaveTaskType.TestOrchestration,
+                                NodeSpecificPayloads: new() { { "InternalTestSlave", new() { { "slaveBehavior", SlaveBehaviorMode.FailOnExecute } } } }
+                            )
+                        };
+
+                        var parallelResults = await stage.CreateAndExecuteNodeActionsInParallelAsync(parallelActionInputs);
+
+                        if (parallelResults.Any(r => !r.IsSuccess))
+                        {
+                            throw new Exception("One or more parallel actions failed.");
+                        }
+
+                        // If successful, set the final result payload on the master action.
+                        context.SetFinalResult(parallelResults);
+                    }
+                }
+                else
+                {
+                    // Begin a single logical stage, telling it to expect ONE sub-action (the node action).
+                    await using (var stage = await context.BeginStageAsync("MultiNodeTestStage", subActionCount: 1))
+                    {
+                        // The payload for the slave task is the full set of original parameters.
+                        var taskPayload = new Dictionary<string, object>(context.Parameters);
+
+                        // Create and execute the NodeAction via the StageContext.
+                        // We use `nodeSpecificPayloads` to ensure the task payload is only sent to our one target node.
+                        var multiNodeResult = await stage.CreateAndExecuteNodeActionAsync(
+                            "Orchestration Test Stage",
+                            SlaveTaskType.TestOrchestration,
+                            nodeSpecificPayloads: new() { { targetNodeName, taskPayload } }
+                        );
+
+                        // Simulate master-side failure before the stage completes, if requested.
+                        if (masterFailure == MasterFailureMode.ThrowWithinFirstStage)
+                        {
+                            stage.LogInfo("SIMULATOR: Throwing exception within first stage as requested by MasterFailureMode.");
+                            throw new InvalidOperationException("Simulated master failure within first stage.");
+                        }
+                    
+                        // If the node action itself was not successful, determine if it was a failure or a cancellation.
+                        if (!multiNodeResult.IsSuccess)
+                        {
+                            // Check if the underlying reason for the non-success was a cancellation.
+                            if (multiNodeResult.FinalState.OverallStatus == NodeActionOverallStatus.Cancelled)
+                            {
+                                // Throw the correct exception type to be handled by the cancellation catch block.
+                                var cancelMessage = multiNodeResult.FinalState.NodeTasks.FirstOrDefault(t => t.Status == NodeTaskStatus.Cancelled)?.StatusMessage ?? "Multi-node test stage was cancelled.";
+                                throw new OperationCanceledException(cancelMessage);
+                            }
+    
+                            // Otherwise, it's a genuine failure. Throw a generic exception for the failure catch block.
+                            var failureMessage = multiNodeResult.FinalState.NodeTasks.FirstOrDefault()?.StatusMessage ?? "Multi-node test stage failed.";
+                            throw new Exception(failureMessage);
+                        }
+
+                        // If successful, set the final result payload on the master action.
+                        context.SetFinalResult(multiNodeResult.FinalState.NodeTasks.FirstOrDefault(t => t.NodeName == targetNodeName)?.ResultPayload);
+
+                    } // The stage is disposed and finalized here.
+
+                    // Simulate master-side failure before the stage completes, if requested.
+                    if (masterFailure == MasterFailureMode.ThrowAfterFirstStage)
+                    {
+                        context.LogInfo("SIMULATOR: Throwing exception after first stage as requested by MasterFailureMode.");
+                        throw new InvalidOperationException("Simulated master failure after first stage.");
+                    }
+                    
+
                 }
 
-                // --- 6. Finalize Workflow State ---
-                await context.BeginStageAsync("Finalization");
-                if (multiNodeResult.IsSuccess)
-                {
-                    context.SetFinalResult(multiNodeResult.FinalOperationState.NodeTasks.FirstOrDefault()?.ResultPayload);
-                    context.SetCompleted("Orchestration Test completed successfully.");
-                    await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Success, Description = "Test Succeeded", ResultArtifact = multiNodeResult });
-                }
-                // Add a specific check for the Cancelled status
-                else if (multiNodeResult.FinalOperationState.OverallStatus == OperationOverallStatus.Cancelled)
-                {
-                    var cancelMessage = multiNodeResult.FinalOperationState.NodeTasks.FirstOrDefault(t => t.Status == NodeTaskStatus.Cancelled)?.StatusMessage ?? "Multi-node test stage was cancelled.";
-                    // Use the SetCancelled method on the context
-                    context.SetCancelled($"Orchestration Test was cancelled: {cancelMessage}");
-                    await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Cancelled, Description = "Test Cancelled", ResultArtifact = multiNodeResult });
-                }
-                else  // Everything else is a failure
-                {
-                    var failureMessage = multiNodeResult.FinalOperationState.NodeTasks.FirstOrDefault()?.StatusMessage ?? "Multi-node test stage failed.";
-                    context.SetFailed($"Orchestration Test failed: {failureMessage}");
-                    await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Failure, Description = "Test Failed", ResultArtifact = multiNodeResult });
-                }
-                await context.CompleteStageAsync();
+                // If we reach here, the entire workflow was successful.
+                context.SetCompleted("Orchestration Test completed successfully.");
+                await _journalService.FinalizeStateChangeAsync(new StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Success, Description = "Test Succeeded", ResultArtifact = context.MasterAction.FinalResultPayload ?? new {} });
+            }
+            catch (OperationCanceledException)
+            {
+                // Handle cancellation specifically if needed, otherwise the general catch will get it.
+                context.SetCancelled("Orchestration Test was cancelled.");
+                await _journalService.FinalizeStateChangeAsync(new StateChangeFinalizationInfo { ChangeId = changeRecord.ChangeId, Outcome = OperationOutcome.Cancelled, Description = "Test Cancelled", ResultArtifact = new { Error = "Operation was cancelled." } });
             }
             catch (Exception ex)
             {
-                // Finalize the journal entry with a failure state if any exception bubbles up
-                await _journalService.FinalizeStateChangeAsync(new Abstractions.Services.Journaling.StateChangeFinalizationInfo
+                // Any exception thrown during the 'try' block will be caught here.
+                // This marks the master action as failed and finalizes the journal record.
+                context.SetFailed(ex.Message);
+                await _journalService.FinalizeStateChangeAsync(new StateChangeFinalizationInfo
                 {
                     ChangeId = changeRecord.ChangeId,
                     Outcome = OperationOutcome.Failure,
                     Description = $"Test workflow failed with exception: {ex.Message}",
                     ResultArtifact = new { Error = ex.ToString() }
                 });
-
-                // Re-throw the exception so the MasterActionCoordinator can catch it and mark the MasterAction as Failed.
-                throw;
             }
         }
     }

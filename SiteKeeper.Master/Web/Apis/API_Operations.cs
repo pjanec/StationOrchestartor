@@ -96,7 +96,7 @@ namespace SiteKeeper.Master.Web.Apis
                 async (
                     [FromBody] TestOpRequest request,
                     ClaimsPrincipal user,
-                    [FromServices] IMasterActionCoordinatorService masterActionService,
+                    [FromServices] IMasterActionCoordinator masterActionService,
                     [FromServices] IAuditLogService auditLog,
                     HttpContext httpContext) =>
                 {
@@ -146,7 +146,7 @@ namespace SiteKeeper.Master.Web.Apis
 
 
             operationsGroup.MapGet("/{operationId}",
-                async (string operationId, [FromServices] IMasterActionCoordinatorService masterActionService, ClaimsPrincipal user) =>
+                async (string operationId, [FromServices] IMasterActionCoordinator masterActionService, ClaimsPrincipal user) =>
                 {
                     if (!user.IsObserverOrHigher())
                     {
@@ -165,7 +165,7 @@ namespace SiteKeeper.Master.Web.Apis
                 .Produces(StatusCodes.Status403Forbidden)
                 .Produces(StatusCodes.Status401Unauthorized)
                 .RequireAuthorization(policy => policy.RequireAssertion(context => context.User.IsObserverOrHigher()));
-
+    
             operationsGroup.MapPost("/diagnostics/collect-logs",
                 async (
                     [FromBody] CollectLogsRequest request,
@@ -219,7 +219,7 @@ namespace SiteKeeper.Master.Web.Apis
             // operationsGroup.MapPostOperation<PackageNameRequest>("/packages/optional/install", OperationType.PackageOptionalInstall, SiteKeeperRoles.BasicAdmin, "Install Optional Package", "Initiates the installation of an optional package.");
             // operationsGroup.MapPostOperation<PackageNameRequest>("/packages/optional/uninstall", OperationType.PackageOptionalUninstall, SiteKeeperRoles.BasicAdmin, "Uninstall Optional Package", "Initiates the uninstallation of an optional package.");
 
-            operationsGroup.MapPost("/{operationId}/cancel", async (string operationId, [FromServices] IMasterActionCoordinatorService masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext, [FromServices] ILogger<MasterConfig> logger) =>
+            operationsGroup.MapPost("/{operationId}/cancel", async (string operationId, [FromServices] IMasterActionCoordinator masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext, [FromServices] ILogger<MasterConfig> logger) =>
             {
                 // Swagger: Role appropriate to the original operation. For simplicity, OperatorOrHigher is used here.
                 if (!user.IsOperatorOrHigher())
@@ -268,7 +268,7 @@ namespace SiteKeeper.Master.Web.Apis
             .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
             .Produces<ErrorResponse>(StatusCodes.Status409Conflict);
 
-            operationsGroup.MapPost("/packages/optional/install", async (PackageNameRequest request, [FromServices] IMasterActionCoordinatorService masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
+            operationsGroup.MapPost("/packages/optional/install", async (PackageNameRequest request, [FromServices] IMasterActionCoordinator masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
             {
                 if (!user.IsBasicAdminOrHigher()) return Results.Forbid();
                 var username = user.GetUsername();
@@ -298,7 +298,7 @@ namespace SiteKeeper.Master.Web.Apis
               .Produces<OperationInitiationResponse>(StatusCodes.Status202Accepted)
               .Produces<ErrorResponse>(StatusCodes.Status400BadRequest);
 
-            operationsGroup.MapPost("/packages/optional/uninstall", async (PackageNameRequest request, [FromServices] IMasterActionCoordinatorService masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
+            operationsGroup.MapPost("/packages/optional/uninstall", async (PackageNameRequest request, [FromServices] IMasterActionCoordinator masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
             {
                 if (!user.IsBasicAdminOrHigher()) return Results.Forbid();
                 var username = user.GetUsername();
@@ -329,7 +329,7 @@ namespace SiteKeeper.Master.Web.Apis
               .Produces<ErrorResponse>(StatusCodes.Status400BadRequest);
 
             // POST /operations/diagnostics/standard (formerly /diagnostics/run)
-            operationsGroup.MapPost("/diagnostics/standard", async (RunHealthChecksRequest request, [FromServices] IMasterActionCoordinatorService masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
+            operationsGroup.MapPost("/diagnostics/standard", async (RunHealthChecksRequest request, [FromServices] IMasterActionCoordinator masterActionService, ClaimsPrincipal user, [FromServices] IAuditLogService auditLog, HttpContext httpContext) =>
             {
                 if (!user.IsOperatorOrHigher()) return Results.Forbid();
 
@@ -405,7 +405,7 @@ namespace SiteKeeper.Master.Web.Apis
             group.MapPost(pattern, async (
                 [FromBody] TRequest request,
                 ClaimsPrincipal user,
-                [FromServices] IMasterActionCoordinatorService masterActionService,
+                [FromServices] IMasterActionCoordinator masterActionService,
                 [FromServices] IAuditLogService auditLog,
                 [FromServices] ILoggerFactory loggerFactory,
                 HttpContext httpContext) =>

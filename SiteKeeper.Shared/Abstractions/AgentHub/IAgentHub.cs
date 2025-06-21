@@ -47,10 +47,10 @@ namespace SiteKeeper.Shared.Abstractions.AgentHub
         Task UpdateMasterStateAsync(MasterStateForAgent state);
 
         /// <summary>
-        /// Requests that the slave agent flush all buffered logs for a specific operation.
+        /// Requests that the slave agent flush all buffered logs for a specific action.
         /// The agent is expected to call back with ConfirmLogFlushForTask when done.
         /// </summary>
-        /// <param name="operationId">The unique identifier of the operation whose logs should be flushed.</param>
-        Task RequestLogFlushForTask(string operationId);
+        /// <param name="actionId">The unique identifier of the operation whose logs should be flushed.</param>
+        Task RequestLogFlushForTask(string actionId);
     }
 } 

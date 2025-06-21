@@ -18,8 +18,8 @@ namespace SiteKeeper.Shared.DTOs.AgentHub
         /// <summary>
         /// The unique ID of the overall operation this log entry belongs to.
         /// </summary>
-        [JsonPropertyName("operationId")]
-        public string OperationId { get; set; } = string.Empty;
+        [JsonPropertyName("actionId")]
+        public string ActionId { get; set; } = string.Empty;
 
         /// <summary>
         /// The unique ID of the specific task on the node this log entry belongs to.

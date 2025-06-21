@@ -6,39 +6,27 @@ using System.ComponentModel.DataAnnotations; // For potential future use
 namespace SiteKeeper.Master.Model.InternalData
 {
     /// <summary>
-    /// Represents a specific task assigned to a node as part of a larger <see cref="Operation"/>.
+    /// Represents a specific task assigned to a node as part of a larger <see cref="NodeAction"/>.
     /// </summary>
     /// <remarks>
-    /// Each operation is broken down into one or more node tasks, each targeted at a specific Slave Agent.
+    /// Each action is broken down into one or more node tasks, each targeted at a specific Slave Agent.
     /// This class tracks the lifecycle, payload, and status of an individual task.
-    ///
-    /// Key aspects based on "SiteKeeper - Master - Data Structures.md":
-    /// - Unique Task ID (within the scope of an operation).
-    /// - Reference to the parent Operation ID.
-    /// - Target NodeName (identifies the Slave Agent).
-    /// - Type of task to be executed by the slave (<see cref="SlaveTaskType"/>).
-    /// - Current status of the task (<see cref="NodeTaskStatus"/>).
-    /// - Payload containing data/parameters for the slave to execute the task.
-    /// - Timestamps for creation, start, end, and last update.
-    /// - Progress percentage and status messages from the slave.
-    /// - Retry attempts for transient failures.
-    /// - Optional result payload from the slave upon completion.
     /// </remarks>
     public class NodeTask
     {
         /// <summary>
-        /// Unique identifier for this task, typically unique within the scope of its parent operation.
-        /// Could be, for example, "{OperationId}-{NodeName}-{TaskSequence}".
+        /// Unique identifier for this task, typically unique within the scope of its parent action.
+        /// Could be, for example, "{ActionId}-{NodeName}-{TaskSequence}".
         /// </summary>
         /// <example>"op-deploy-webapp-123-AppServer01-1"</example>
         [Required]
         public string TaskId { get; set; }
 
         /// <summary>
-        /// Identifier of the <see cref="Operation"/> this task belongs to.
+        /// Identifier of the <see cref="NodeAction"/> this task belongs to.
         /// </summary>
         [Required]
-        public string OperationId { get; set; }
+        public string ActionId { get; set; }
 
         /// <summary>
         /// The name of the node (Slave Agent) this task is targeted at.
@@ -113,14 +101,14 @@ namespace SiteKeeper.Master.Model.InternalData
         /// Initializes a new instance of the <see cref="NodeTask"/> class.
         /// </summary>
         /// <param name="taskId">Unique ID for the task.</param>
-        /// <param name="operationId">Parent operation ID.</param>
+        /// <param name="actionId">Parent action ID.</param>
         /// <param name="nodeName">Target node name.</param>
         /// <param name="taskType">Type of slave task.</param>
         /// <param name="taskPayload">Payload for the task.</param>
-        public NodeTask(string taskId, string operationId, string nodeName, SlaveTaskType taskType, Dictionary<string, object> taskPayload)
+        public NodeTask(string taskId, string actionId, string nodeName, SlaveTaskType taskType, Dictionary<string, object> taskPayload)
         {
             TaskId = !string.IsNullOrWhiteSpace(taskId) ? taskId : throw new ArgumentNullException(nameof(taskId));
-            OperationId = !string.IsNullOrWhiteSpace(operationId) ? operationId : throw new ArgumentNullException(nameof(operationId));
+            ActionId = !string.IsNullOrWhiteSpace(actionId) ? actionId : throw new ArgumentNullException(nameof(actionId));
             NodeName = !string.IsNullOrWhiteSpace(nodeName) ? nodeName : throw new ArgumentNullException(nameof(nodeName));
             TaskType = taskType;
             TaskPayload = taskPayload ?? throw new ArgumentNullException(nameof(taskPayload));

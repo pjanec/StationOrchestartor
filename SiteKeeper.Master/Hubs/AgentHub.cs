@@ -2,7 +2,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using SiteKeeper.Master.Abstractions.Services;
 using SiteKeeper.Master.Services;
-using SiteKeeper.Master.Workflow.StageHandlers; // The new location for the stage handler
+using SiteKeeper.Master.Workflow;
 using SiteKeeper.Shared.Abstractions.AgentHub;
 using SiteKeeper.Shared.DTOs.AgentHub;
 using SiteKeeper.Shared.DTOs.MasterSlave;
@@ -20,24 +20,24 @@ namespace SiteKeeper.Master.Hubs
     public class AgentHub : Hub<IAgentHub>, IAgentHubClient
     {
         private const string NodeNameItemKey = "NodeName";
-        private readonly IAgentConnectionManagerService _agentConnectionManager;
-        private readonly MultiNodeOperationStageHandler _multiNodeStageHandler;
+        private readonly IAgentConnectionManager _agentConnectionManager;
+        private readonly NodeActionDispatcher _nodeActionDispatcher;
         private readonly ILogger<AgentHub> _logger;
-        private readonly IJournalService _journalService;
+        private readonly IJournal _journalService;
 
         /// <summary>
         /// Initializes a new instance of the AgentHub.
-        // It injects the concrete MultiNodeOperationStageHandler class, which must be registered
+        // It injects the concrete NodeActionDispatcher class, which must be registered
         // as a singleton, to call its public methods for processing slave feedback.
         /// </summary>
         public AgentHub(
-            IAgentConnectionManagerService agentConnectionManager,
-            MultiNodeOperationStageHandler multiNodeStageHandler,
+            IAgentConnectionManager agentConnectionManager,
+            NodeActionDispatcher nodeActionDispatcher,
             ILogger<AgentHub> logger,
-            IJournalService journalService)
+            IJournal journalService)
         {
             _agentConnectionManager = agentConnectionManager ?? throw new ArgumentNullException(nameof(agentConnectionManager));
-            _multiNodeStageHandler = multiNodeStageHandler ?? throw new ArgumentNullException(nameof(multiNodeStageHandler));
+            _nodeActionDispatcher = nodeActionDispatcher ?? throw new ArgumentNullException(nameof(nodeActionDispatcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 			_journalService = journalService ?? throw new ArgumentNullException( nameof( journalService ) );
 		}
@@ -104,30 +104,30 @@ namespace SiteKeeper.Master.Hubs
         }
 
         /// <summary>
-        /// Forwards a task progress update from a slave directly to the MultiNodeOperationStageHandler.
+        /// Forwards a task progress update from a slave directly to the NodeActionDispatcher.
         /// </summary>
         public async Task ReportOngoingTaskProgressAsync(SlaveTaskProgressUpdate taskUpdate)
         {
             // The hub is just a pass-through. The stage handler contains all the logic
-            // for updating the state of the operation.
-            await _multiNodeStageHandler.ProcessTaskStatusUpdateAsync(taskUpdate);
+            // for updating the state of the action.
+            await _nodeActionDispatcher.ProcessTaskStatusUpdateAsync(taskUpdate);
         }
 
         /// <summary>
-        /// Forwards a task readiness report from a slave directly to the MultiNodeOperationStageHandler.
+        /// Forwards a task readiness report from a slave directly to the NodeActionDispatcher.
         /// </summary>
         public async Task ReportSlaveTaskReadinessAsync(SlaveTaskReadinessReport readinessReport)
         {
-            await _multiNodeStageHandler.ProcessSlaveTaskReadinessAsync(readinessReport);
+            await _nodeActionDispatcher.ProcessSlaveTaskReadinessAsync(readinessReport);
         }
 
         /// <summary>
-        /// Forwards a log flush confirmation from a slave directly to the MultiNodeOperationStageHandler.
+        /// Forwards a log flush confirmation from a slave directly to the NodeActionDispatcher.
         /// This is the final step in the log synchronization handshake.
         /// </summary>
-        public async Task ConfirmLogFlushForTask(string operationId, string nodeName)
+        public async Task ConfirmLogFlushForTask(string actionId, string nodeName)
         {
-            _multiNodeStageHandler.ConfirmLogFlush(operationId, nodeName);
+            _nodeActionDispatcher.ConfirmLogFlush(actionId, nodeName);
             await Task.CompletedTask; // Hub methods must return a Task.
         }
 
@@ -139,16 +139,15 @@ namespace SiteKeeper.Master.Hubs
         public async Task ReportSlaveTaskLogAsync(SlaveTaskLogEntry logEntry)
         {
             _logger.LogInformation("HUB-ENTRY: ReportSlaveTaskLogAsync received from slave. OpId: {OpId}, TaskId: {TaskId}, Node: {Node}, Message: '{Message}'", 
-                logEntry.OperationId, logEntry.TaskId, logEntry.NodeName, logEntry.LogMessage);
+                logEntry.ActionId, logEntry.TaskId, logEntry.NodeName, logEntry.LogMessage);
 
-            if (logEntry == null || string.IsNullOrEmpty(logEntry.OperationId))
+            if (logEntry == null || string.IsNullOrEmpty(logEntry.ActionId))
             {
                 _logger.LogWarning("Received an invalid or empty log entry from a slave on connection {ConnectionId}.", Context.ConnectionId);
                 return;
             }
 
-            // The multinodestagehandler is now responsible for calling the journal service and tracking the task.
-            await _multiNodeStageHandler.JournalSlaveLogAsync(logEntry);
+            await _nodeActionDispatcher.JournalSlaveLogAsync(logEntry);
         }
 
         #endregion

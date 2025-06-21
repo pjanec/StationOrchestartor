@@ -22,6 +22,8 @@ using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
+using SiteKeeper.Slave.Services.TaskHandlers;
 
 namespace SiteKeeper.Slave
 {
@@ -34,11 +36,11 @@ namespace SiteKeeper.Slave
     /// <list type="bullet">
     ///   <item><description>Establishing and maintaining a persistent SignalR connection to the Master Agent Hub.</description></item>
     ///   <item><description>Registering the slave agent with the master upon connection.</description></item>
-    ///   <item><description>Handling incoming messages and instructions from the master, such as requests to prepare for a task, execute a task, or cancel an ongoing task. These are typically delegated to the <see cref="OperationHandler"/>.</description></item>
+    ///   <item><description>Handling incoming messages and instructions from the master, such as requests to prepare for a task, execute a task, or cancel an ongoing task. These are typically delegated to the <see cref="SlaveCommandsHandler"/>.</description></item>
     ///   <item><description>Sending regular heartbeat signals and periodic resource usage reports to the master.</description></item>
     ///   <item><description>Managing concurrent task execution using a semaphore, based on the <see cref="SlaveConfig.MaxConcurrentTasks"/> setting.</description></item>
     ///   <item><description>Ensuring graceful startup and shutdown, integrating with the .NET Generic Host lifecycle via <see cref="IHostedService"/>.</description></item>
-    ///   <item><description>Providing callbacks to the <see cref="OperationHandler"/> for sending task progress updates and readiness reports back to the master.</description></item>
+    ///   <item><description>Providing callbacks to the <see cref="SlaveCommandsHandler"/> for sending task progress updates and readiness reports back to the master.</description></item>
     /// </list>
     /// Communication with the master primarily uses DTOs defined in <see cref="SiteKeeper.Shared.DTOs.MasterSlave"/> and <see cref="SiteKeeper.Shared.DTOs.AgentHub"/>.
     /// Configuration is drawn from <see cref="SlaveConfig"/>.
@@ -49,8 +51,7 @@ namespace SiteKeeper.Slave
         private readonly ILogger<SlaveAgentService> _logger;
         private readonly SlaveConfig _config;
         private readonly IHostApplicationLifetime _appLifetime;
-        private readonly OperationHandler _operationHandler;
-        private readonly IExecutiveCodeExecutor _executiveCodeExecutor;
+        private readonly SlaveCommandsHandler _slaveCommandsHandler;
 
         private HubConnection? _masterConnection;
         private Timer? _heartbeatTimer;
@@ -63,7 +64,7 @@ namespace SiteKeeper.Slave
         private PerformanceCounter? _memoryCounter;
         private ulong _totalMemoryBytes = 0;
 
-        private const string LogMdlcOperationId = "SK-OperationId";
+        private const string LogMdlcActionId = "SK-ActionId";
         private const string LogMdlcTaskId = "SK-TaskId";
         private const string LogMdlcNodeName = "SK-NodeName";
 
@@ -76,7 +77,7 @@ namespace SiteKeeper.Slave
         /// <param name="executiveCodeExecutor">The executor responsible for running the actual task scripts or commands, injected by DI.</param>
         /// <remarks>
         /// The constructor initializes readonly fields and sets up core components:
-        /// - The <see cref="OperationHandler"/> is instantiated, receiving callbacks (<see cref="SendSlaveTaskUpdateAsync"/> and <see cref="SendTaskReadinessReportAsync"/>) 
+        /// - The <see cref="SlaveCommandsHandler"/> is instantiated, receiving callbacks (<see cref="SendSlaveTaskUpdateAsync"/> and <see cref="SendTaskReadinessReportAsync"/>) 
         ///   that allow it to communicate task progress and readiness reports back to the Master Agent via this service.
         /// - A <see cref="SemaphoreSlim"/> is configured based on <see cref="SlaveConfig.MaxConcurrentTasks"/> to limit the number of simultaneously executing tasks.
         /// Critical dependencies like logger, config, appLifetime, and executiveCodeExecutor are validated for nullity.
@@ -85,19 +86,24 @@ namespace SiteKeeper.Slave
             ILogger<SlaveAgentService> logger,
             IOptions<SlaveConfig> configOptions,
             IHostApplicationLifetime appLifetime,
-            IExecutiveCodeExecutor executiveCodeExecutor
+            IServiceProvider serviceProvider
             )
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _config = configOptions?.Value ?? throw new ArgumentNullException(nameof(configOptions));
             _appLifetime = appLifetime ?? throw new ArgumentNullException(nameof(appLifetime));
-            _executiveCodeExecutor = executiveCodeExecutor ?? throw new ArgumentNullException(nameof(executiveCodeExecutor));
 
-            _operationHandler = new OperationHandler(
+            // --- Service Locator pattern is used here to resolve DI-managed handlers ---
+            // This is a pragmatic choice to keep AgentCommandsHandler's construction simple,
+            // as it's tightly coupled to the state (callbacks) of this singleton service.
+            // The handlers themselves are fully managed by the DI container.
+            var slaveTaskHandlers = serviceProvider.GetRequiredService<IEnumerable<ISlaveTaskHandler>>();
+
+            _slaveCommandsHandler = new SlaveCommandsHandler(
                 _config.AgentName,
-                SendSlaveTaskUpdateAsync,     // Callback for OperationHandler to send general progress/status updates
-                SendTaskReadinessReportAsync, // Callback for OperationHandler to send specific readiness reports
-                _executiveCodeExecutor      // The executor is passed to OperationHandler to run task logic
+                SendSlaveTaskUpdateAsync,
+                SendTaskReadinessReportAsync,
+                slaveTaskHandlers      // Pass the collection of handlers
             );
 
             _concurrentTaskSemaphore = new SemaphoreSlim(_config.MaxConcurrentTasks, _config.MaxConcurrentTasks);
@@ -196,7 +202,7 @@ namespace SiteKeeper.Slave
         /// This method is part of the <see cref="IHostedService"/> interface.
         /// It signals the service's internal <see cref="CancellationTokenSource"/> (<see cref="_stoppingCts"/>) to begin shutdown.
         /// It stops the heartbeat and resource monitoring timers, attempts to gracefully disconnect the SignalR connection
-        /// (with a timeout), cancels any active tasks managed by the <see cref="OperationHandler"/> (via <see cref="SlaveTaskContext.CancellationTokenSource"/>),
+        /// (with a timeout), cancels any active tasks managed by the <see cref="SlaveCommandsHandler"/> (via <see cref="SlaveTaskContext.CancellationTokenSource"/>),
         /// disposes the <see cref="SemaphoreSlim"/>, and finally shuts down NLog to flush logs.
         /// </remarks>
         public async Task StopAsync(CancellationToken cancellationToken)
@@ -341,25 +347,25 @@ namespace SiteKeeper.Slave
 
             _masterConnection.On<PrepareForTaskInstruction>("ReceivePrepareForTaskInstructionAsync", async (instruction) =>
             {
-                await HandleSignalRInvokeAsync(instruction.OperationId, instruction.TaskId, async () =>
+                await HandleSignalRInvokeAsync(instruction.ActionId, instruction.TaskId, async () =>
                 {
-                    await _operationHandler.HandlePrepareForTaskAsync(instruction);
+                    await _slaveCommandsHandler.HandlePrepareForTaskAsync(instruction);
                 });
             });
 
             _masterConnection.On<SlaveTaskInstruction>("ReceiveSlaveTaskAsync", async (instruction) =>
             {
-                await HandleSignalRInvokeAsync(instruction.OperationId, instruction.TaskId, async () =>
+                await HandleSignalRInvokeAsync(instruction.ActionId, instruction.TaskId, async () =>
                 {
-                    await _operationHandler.HandleSlaveTaskAsync(instruction, _activeSlaveTasks, _concurrentTaskSemaphore);
+                    await _slaveCommandsHandler.HandleSlaveTaskAsync(instruction, _activeSlaveTasks, _concurrentTaskSemaphore);
                 });
             });
 
             _masterConnection.On<CancelTaskOnAgentRequest>("ReceiveCancelTaskRequestAsync", async (request) =>
             {
-                await HandleSignalRInvokeAsync(request.OperationId, request.TaskId, async () =>
+                await HandleSignalRInvokeAsync(request.ActionId, request.TaskId, async () =>
                 {
-                    await _operationHandler.HandleTaskCancelRequestAsync(request.OperationId, request.TaskId, _activeSlaveTasks);
+                    await _slaveCommandsHandler.HandleTaskCancelRequestAsync(request.ActionId, request.TaskId, _activeSlaveTasks);
                 });
             });
 
@@ -582,10 +588,10 @@ namespace SiteKeeper.Slave
             {
                 try
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcOperationId, taskUpdateDto.OperationId);
+                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcActionId, taskUpdateDto.ActionId);
                     NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcTaskId, taskUpdateDto.TaskId);
                     await _masterConnection.InvokeAsync("ReportOngoingTaskProgressAsync", taskUpdateDto, _stoppingCts?.Token ?? CancellationToken.None);
-                    _logger.LogDebug($"Sent task progress update for OpId: {taskUpdateDto.OperationId}, TaskId: {taskUpdateDto.TaskId}, Status: {taskUpdateDto.Status}.");
+                    _logger.LogDebug($"Sent task progress update for OpId: {taskUpdateDto.ActionId}, TaskId: {taskUpdateDto.TaskId}, Status: {taskUpdateDto.Status}.");
                 }
                 catch (OperationCanceledException) when (_stoppingCts?.IsCancellationRequested ?? false)
                 {
@@ -593,17 +599,17 @@ namespace SiteKeeper.Slave
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send task progress update for OpId: {taskUpdateDto.OperationId}, TaskId: {taskUpdateDto.TaskId}.");
+                    _logger.LogError(ex, $"Failed to send task progress update for OpId: {taskUpdateDto.ActionId}, TaskId: {taskUpdateDto.TaskId}.");
                 }
                 finally
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcOperationId);
+                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcActionId);
                     NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcTaskId);
                 }
             }
             else
             {
-                _logger.LogWarning($"Cannot send task progress update for OpId: {taskUpdateDto.OperationId}, TaskId: {taskUpdateDto.TaskId}. No active connection to Master.");
+                _logger.LogWarning($"Cannot send task progress update for OpId: {taskUpdateDto.ActionId}, TaskId: {taskUpdateDto.TaskId}. No active connection to Master.");
             }
         }
 
@@ -613,10 +619,10 @@ namespace SiteKeeper.Slave
             {
                 try
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcOperationId, readinessReportDto.OperationId);
+                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcActionId, readinessReportDto.ActionId);
                     NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcTaskId, readinessReportDto.TaskId);
                     await _masterConnection.InvokeAsync("ReportSlaveTaskReadinessAsync", readinessReportDto, _stoppingCts?.Token ?? CancellationToken.None);
-                    _logger.LogInformation($"Successfully sent readiness report for OpId: {readinessReportDto.OperationId}, TaskId: {readinessReportDto.TaskId}, Node: '{readinessReportDto.NodeName}', IsReady: {readinessReportDto.IsReady}.");
+                    _logger.LogInformation($"Successfully sent readiness report for OpId: {readinessReportDto.ActionId}, TaskId: {readinessReportDto.TaskId}, Node: '{readinessReportDto.NodeName}', IsReady: {readinessReportDto.IsReady}.");
                 }
                 catch (OperationCanceledException) when (_stoppingCts?.IsCancellationRequested ?? false)
                 {
@@ -624,17 +630,17 @@ namespace SiteKeeper.Slave
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send readiness report for OpId: {readinessReportDto.OperationId}, TaskId: {readinessReportDto.TaskId}. Error: {ex.Message}");
+                    _logger.LogError(ex, $"Failed to send readiness report for OpId: {readinessReportDto.ActionId}, TaskId: {readinessReportDto.TaskId}. Error: {ex.Message}");
                 }
                  finally
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcOperationId);
+                    NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcActionId);
                     NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcTaskId);
                 }
             }
             else
             {
-                _logger.LogWarning($"Cannot send readiness report for OpId: {readinessReportDto.OperationId}, TaskId: {readinessReportDto.TaskId}. No active connection to Master.");
+                _logger.LogWarning($"Cannot send readiness report for OpId: {readinessReportDto.ActionId}, TaskId: {readinessReportDto.TaskId}. No active connection to Master.");
             }
         }
 
@@ -647,7 +653,7 @@ namespace SiteKeeper.Slave
             {
                 if (!string.IsNullOrEmpty(operationId))
                 {
-                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcOperationId, operationId);
+                    NLog.MappedDiagnosticsLogicalContext.Set(LogMdlcActionId, operationId);
                     opIdSetInMdlc = true;
                 }
                 if (!string.IsNullOrEmpty(taskId))
@@ -670,7 +676,7 @@ namespace SiteKeeper.Slave
             }
             finally
             {
-                if (opIdSetInMdlc) NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcOperationId);
+                if (opIdSetInMdlc) NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcActionId);
                 if (taskIdSetInMdlc) NLog.MappedDiagnosticsLogicalContext.Remove(LogMdlcTaskId);
             }
         }

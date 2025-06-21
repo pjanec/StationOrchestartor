@@ -31,9 +31,8 @@ namespace SiteKeeper.Shared.DTOs.API.Environment
         public string Name { get; set; } = string.Empty;
 
         /// <summary>
-        /// Final status of the operation (Success, Failure, Cancelled).
+        /// Final status of the action (Success, Failure, Cancelled).
         /// </summary>
-        /// <example>CompletedOperationFinalStatus.Success</example>
         [Required]
         public CompletedOperationFinalStatus Status { get; set; }
 

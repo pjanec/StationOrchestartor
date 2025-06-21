@@ -33,7 +33,7 @@ namespace SiteKeeper.Master.Web.Apis
                                   .RequireHost(guiHostConstraint);
 
             journalGroup.MapGet("/", async ([AsParameters] JournalQueryParameters queryParams,
-                                           [FromServices] IJournalService journalService,
+                                           [FromServices] IJournal journalService,
                                            ClaimsPrincipal user) =>
             {
                 if (!user.IsObserverOrHigher())
@@ -65,7 +65,7 @@ namespace SiteKeeper.Master.Web.Apis
               .Produces<ErrorResponse>(StatusCodes.Status400BadRequest);
 
             journalGroup.MapGet("/{journalRecordId}", async (string journalRecordId,
-                                                             [FromServices] IJournalService journalService,
+                                                             [FromServices] IJournal journalService,
                                                              ClaimsPrincipal user) =>
             {
                 if (!user.IsObserverOrHigher())

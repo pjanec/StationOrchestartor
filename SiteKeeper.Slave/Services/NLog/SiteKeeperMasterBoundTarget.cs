@@ -21,7 +21,7 @@ namespace SiteKeeper.Slave.Services.NLog2
     /// blocking the application threads while waiting for network operations.
     /// 
     /// It works by checking for specific MappedDiagnosticsLogicalContext (MDLC) properties
-    /// (SK-OperationId, SK-TaskId, SK-NodeName). If present, it sends the log as a 
+    /// (SK-ActionId, SK-TaskId, SK-NodeName). If present, it sends the log as a 
     /// <see cref="SlaveTaskLogEntry"/> to the master.
     /// 
     /// The SignalR HubConnection is provided by the SlaveAgentService via the static
@@ -121,7 +121,7 @@ namespace SiteKeeper.Slave.Services.NLog2
             }
 
             // A log event is only relevant for remote logging if it has the OperationId.
-            if (!logEvent.Properties.TryGetValue("SK-OperationId", out var opIdObj) || opIdObj is not string opId || string.IsNullOrEmpty(opId))
+            if (!logEvent.Properties.TryGetValue("SK-ActionId", out var opIdObj) || opIdObj is not string opId || string.IsNullOrEmpty(opId))
             {
                 return;
             }
@@ -134,7 +134,7 @@ namespace SiteKeeper.Slave.Services.NLog2
             {
                 var entry = new SlaveTaskLogEntry
                 {
-                    OperationId = opId,
+                    ActionId = opId,
                     TaskId = taskIdObj as string ?? string.Empty,
                     NodeName = nodeNameObj as string ?? string.Empty,
                     LogLevel = MapNLogLevelToSiteKeeperLevel(logEvent.Level),
@@ -144,7 +144,7 @@ namespace SiteKeeper.Slave.Services.NLog2
 
                 // The rest of this method can remain the same...
                 var logger = LogManager.GetCurrentClassLogger();
-                logger.Log(NLog.LogLevel.Debug, "Attempting to send SlaveTaskLogEntry to master. OpId: {0}, TaskId: {1}, Message: '{2}'", entry.OperationId, entry.TaskId, entry.LogMessage);
+                logger.Log(NLog.LogLevel.Debug, "Attempting to send SlaveTaskLogEntry to master. OpId: {0}, TaskId: {1}, Message: '{2}'", entry.ActionId, entry.TaskId, entry.LogMessage);
 
                 await hubConnection.InvokeAsync("ReportSlaveTaskLogAsync", entry);
         

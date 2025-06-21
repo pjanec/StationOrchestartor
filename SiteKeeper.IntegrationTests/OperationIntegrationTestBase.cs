@@ -17,38 +17,30 @@ using Xunit;
 using Xunit.Abstractions;
 using System.Collections.Generic;
 using System.Linq;
+using SiteKeeper.Master.Model.InternalData;
+using System.Text.Json.Serialization;
 
 namespace SiteKeeper.IntegrationTests
 {
-    /// <summary>
-    /// An abstract base class for all operation-related integration tests.
-    /// It handles common setup like HttpClient creation, authentication, and provides
-    /// helper methods for polling operations and verifying journal entries.
-    /// </summary>
     [Collection("SiteKeeperHost")]
     public abstract class OperationIntegrationTestBase : IDisposable
     {
         protected readonly HttpClient _client;
         protected readonly ITestOutputHelper _output;
         protected readonly SiteKeeperHostFixture _fixture;
-        protected readonly IJournalService _journalService;
-        protected readonly string _journalRootPath;
-        private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
+        protected readonly IJournal _journalService; // The service is now injected.
+        protected readonly JsonSerializerOptions _jsonOptions;
 
         public OperationIntegrationTestBase(SiteKeeperHostFixture fixture, ITestOutputHelper output)
         {
             _fixture = fixture;
             _output = output;
-            _client = new HttpClient();
-            
-            _client.BaseAddress = new Uri("http://localhost:5001"); 
+            _client = new HttpClient { BaseAddress = new Uri("http://localhost:5001") };
 
-            // Get services and configuration needed for verification directly from the running host's DI container.
-            _journalService = _fixture.AppHost.Services.GetRequiredService<IJournalService>();
-            var config = _fixture.AppHost.Services.GetRequiredService<IOptions<MasterConfig>>().Value;
+            // Resolve the IJournal service from the running host's DI container.
+            _journalService = _fixture.AppHost.Services.GetRequiredService<IJournal>();
             
-            // Construct the full path to the environment's journal root for file-based verification.
-            _journalRootPath = Path.Combine(config.JournalRootPath, config.EnvironmentName);
+            _jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true, Converters = { new JsonStringEnumConverter() }};
 
             AuthenticateClient().GetAwaiter().GetResult();
         }
@@ -65,7 +57,7 @@ namespace SiteKeeper.IntegrationTests
                 var authResponse = await response.Content.ReadFromJsonAsync<AuthResponse>();
                 Assert.NotNull(authResponse);
                 
-                // Set the authentication header for all subsequent requests from this client.
+                    // Set the authentication header for all subsequent requests from this client.
                 _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", authResponse.AccessToken);
                 _output.WriteLine("Client successfully authenticated for test run.");
             }
@@ -101,7 +93,7 @@ namespace SiteKeeper.IntegrationTests
                 Assert.NotNull(statusResult);
                 _output.WriteLine($"Polling '{operationId}'... Status: {statusResult.Status}, Progress: {statusResult.ProgressPercent}%");
                 // Use the OperationOverallStatus enum for reliable check
-                if (Enum.TryParse<OperationOverallStatus>(statusResult.Status, true, out var currentStatus) && currentStatus.IsCompleted())
+                if (Enum.TryParse<NodeActionOverallStatus>(statusResult.Status, true, out var currentStatus) && currentStatus.IsCompleted())
                 {
                     operationCompleted = true;
                 }
@@ -110,79 +102,47 @@ namespace SiteKeeper.IntegrationTests
             return statusResult;
         }
         
+        #region New Journal Service Test Helpers
+
         /// <summary>
-        /// Finds the full path to the Action Journal directory for a given Master Action (Operation) ID.
+        /// Retrieves the complete, archived MasterAction object by calling the IJournal service.
+        /// This replaces reading 'master_action_info.json' from disk.
         /// </summary>
-        /// <param name="masterActionId">The ID of the Master Action.</param>
-        /// <returns>The full directory path if found; otherwise, null.</returns>
-        protected string? FindActionJournalDirectory(string masterActionId)
+        protected Task<MasterAction?> GetArchivedMasterActionFromJournal(string operationId)
         {
-            var actionJournalRoot = Path.Combine(_journalRootPath, "ActionJournal");
-            if (!Directory.Exists(actionJournalRoot))
-            {
-                _output.WriteLine($"Action Journal root directory not found at: {actionJournalRoot}");
-                return null;
-            }
-
-            // Folder name format: {timestamp}-{masterActionId}
-            var dirs = Directory.GetDirectories(actionJournalRoot, $"*-{masterActionId}");
-            var dirPath = dirs.FirstOrDefault();
-
-            if (dirPath == null)
-            {
-                _output.WriteLine($"Could not find journal directory for MasterActionId: {masterActionId}");
-            }
-            return dirPath;
+            return _journalService.GetArchivedMasterActionAsync(operationId);
         }
 
         /// <summary>
-        /// Reads and deserializes a JSON file from a specified path.
+        /// Retrieves the detailed result of a specific stage by calling the IJournal service.
+        /// This replaces reading 'stage_result.json' from disk.
         /// </summary>
-        /// <typeparam name="T">The type to deserialize the JSON into.</typeparam>
-        /// <param name="filePath">The full path to the JSON file.</param>
-        /// <returns>The deserialized object, or null if the file doesn't exist or deserialization fails.</returns>
-        protected async Task<T?> ReadJournalJsonFile<T>(string filePath) where T : class
+        protected Task<T?> GetStageResultFromJournal<T>(string operationId, int stageIndex) where T : class
         {
-            if (!File.Exists(filePath))
-            {
-                _output.WriteLine($"Journal file not found: {filePath}");
-                return null;
-            }
-            var json = await File.ReadAllTextAsync(filePath);
-            return JsonSerializer.Deserialize<T>(json, _jsonOptions);
+            // Note: This requires extending IJournal and Journal.cs to expose this functionality.
+            // Assuming this is done as per our discussion.
+            // The journal service would find the correct folder and file and deserialize it.
+            return _fixture.AppHost.Services.GetRequiredService<IJournal>()
+                           .GetArchivedStageResultAsync<T>(operationId, stageIndex);
         }
 
         /// <summary>
-        /// A helper to find and read a specific log file from the Action Journal for a given operation and stage.
+        /// Retrieves the content of a specific log file from a specific stage by calling the IJournal service.
+        /// This replaces reading log files directly from the disk.
         /// </summary>
-        /// <param name="actionJournalDir">The root directory for the specific Master Action's journal.</param>
-        /// <param name="stageName">The name of the stage (e.g., "MultiNodeTestStage").</param>
-        /// <param name="logFileName">The name of the log file (e.g., "_master.log" or "InternalTestSlave.log").</param>
-        /// <returns>The content of the log file as a string, or null if not found.</returns>
-        protected async Task<string?> GetStageLogContent(string actionJournalDir, string stageName, string logFileName)
+        protected Task<string?> GetStageLogFromJournal(string operationId, int stageIndex, string logFileName)
         {
-            var stagesDir = Path.Combine(actionJournalDir, "stages");
-            var stageDir = Directory.GetDirectories(stagesDir, $"*-{stageName}").FirstOrDefault();
-
-            if (stageDir == null)
-            {
-                _output.WriteLine($"Could not find stage directory for stage name '{stageName}'");
-                return null;
-            }
-
-            var logFilePath = Path.Combine(stageDir, "logs", logFileName);
-            if (!File.Exists(logFilePath))
-            {
-                _output.WriteLine($"Log file not found: {logFilePath}");
-                return null;
-            }
-
-            return await File.ReadAllTextAsync(logFilePath);
+            // Note: This requires extending IJournal and Journal.cs to expose this functionality.
+            return _fixture.AppHost.Services.GetRequiredService<IJournal>()
+                           .GetArchivedStageLogContentAsync(operationId, stageIndex, logFileName);
         }
+
+        #endregion
 
         public void Dispose()
         {
             _client.Dispose();
+            GC.SuppressFinalize(this);
         }
     }
 }

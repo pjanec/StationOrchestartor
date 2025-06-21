@@ -20,7 +20,7 @@ namespace SiteKeeper.Master.Services.Placeholders
     {
         private readonly ILogger<PlaceholderDiagnosticsService> _logger;
         // The service now depends on the new top-level coordinator.
-        private readonly IMasterActionCoordinatorService _masterActionCoordinator;
+        private readonly IMasterActionCoordinator _masterActionCoordinator;
 
         /// <summary>
         /// Initializes a new instance of the PlaceholderDiagnosticsService class.
@@ -29,7 +29,7 @@ namespace SiteKeeper.Master.Services.Placeholders
         /// <param name="masterActionCoordinator">The new Master Action coordinator service, used to initiate diagnostic workflows.</param>
         public PlaceholderDiagnosticsService(
             ILogger<PlaceholderDiagnosticsService> logger,
-            IMasterActionCoordinatorService masterActionCoordinator)
+            IMasterActionCoordinator masterActionCoordinator)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _masterActionCoordinator = masterActionCoordinator ?? throw new ArgumentNullException(nameof(masterActionCoordinator));

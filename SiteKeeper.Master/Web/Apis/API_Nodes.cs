@@ -54,7 +54,7 @@ namespace SiteKeeper.Master.Web.Apis
             nodesGroup.MapPost("/restart",
                 async (
                     [FromBody] NodeActionRequest request,
-                    [FromServices] IMasterActionCoordinatorService opService,
+                    [FromServices] IMasterActionCoordinator opService,
                     ClaimsPrincipal user,
                     [FromServices] ILoggerFactory loggerFactory) =>
                 {
@@ -104,7 +104,7 @@ namespace SiteKeeper.Master.Web.Apis
             nodesGroup.MapPost("/shutdown",
                 async (
                     [FromBody] NodeActionRequest request, 
-                    [FromServices] IMasterActionCoordinatorService opService, 
+                    [FromServices] IMasterActionCoordinator opService, 
                     ClaimsPrincipal user, 
                     [FromServices] ILoggerFactory loggerFactory) =>
                 {
@@ -155,7 +155,7 @@ namespace SiteKeeper.Master.Web.Apis
                     string nodeName,
                     string action,
                     ClaimsPrincipal user,
-                    [FromServices] IMasterActionCoordinatorService masterActionService,
+                    [FromServices] IMasterActionCoordinator masterActionService,
                     [FromServices] IAuditLogService auditLog,
                     HttpContext httpContext) =>
                 {
@@ -213,7 +213,7 @@ namespace SiteKeeper.Master.Web.Apis
                     string action,
                     [FromBody] NodeActionRequest request,
                     ClaimsPrincipal user,
-                    [FromServices] IMasterActionCoordinatorService masterActionService,
+                    [FromServices] IMasterActionCoordinator masterActionService,
                     [FromServices] IAuditLogService auditLog,
                     HttpContext httpContext) =>
                 {

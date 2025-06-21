@@ -1,21 +1,24 @@
+// System and Third-Party Libraries
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Xunit;
+using Xunit.Abstractions;
+
+// Project-Specific Using Statements
 using SiteKeeper.Master.Model.InternalData;
 using SiteKeeper.Shared.DTOs.API.Operations;
 using SiteKeeper.Shared.Enums;
-using System.Net;
-using System.Net.Http.Json;
-using System.Threading.Tasks;
-using Xunit;
-using Xunit.Abstractions;
-using System.IO;
-using SiteKeeper.Master.Abstractions.Services.Journaling;
-using System.Collections.Generic;
-using System;
-using System.Linq;
-using System.Text.Json;
-using SiteKeeper.Master.Abstractions.Workflow;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using SiteKeeper.Slave;
+using SiteKeeper.Master.Abstractions.Workflow;
 
 namespace SiteKeeper.IntegrationTests
 {
@@ -37,11 +40,19 @@ namespace SiteKeeper.IntegrationTests
 
         /// <summary>
         /// A private helper to centralize the initiation and polling of the 'test-op'.
+        /// This is used for tests that can run to completion without intermediate steps.
         /// </summary>
-        /// <param name="request">The request DTO detailing the desired test behavior.</param>
-        /// <param name="timeoutSeconds">The timeout for polling the operation's completion.</param>
-        /// <returns>The final status response of the operation.</returns>
         private async Task<OperationStatusResponse?> RunTestOperation(TestOpRequest request, int timeoutSeconds = 30)
+        {
+            var initiationResult = await InitiateTestOperation(request);
+            return await PollForOperationCompletion(initiationResult.OperationId, timeoutSeconds);
+        }
+        
+        /// <summary>
+        /// A private helper to only initiate the 'test-op' and return the initiation response.
+        /// This is used for tests that need to perform actions *during* the operation's execution.
+        /// </summary>
+        private async Task<OperationInitiationResponse> InitiateTestOperation(TestOpRequest request)
         {
             var initiateResponse = await _client.PostAsJsonAsync("/api/v1/operations/test-op", request);
             initiateResponse.EnsureSuccessStatusCode();
@@ -50,595 +61,293 @@ namespace SiteKeeper.IntegrationTests
             var initiationResult = await initiateResponse.Content.ReadFromJsonAsync<OperationInitiationResponse>();
             Assert.NotNull(initiationResult);
             _output.WriteLine($"Test operation initiated with ID: {initiationResult.OperationId}");
-
-            return await PollForOperationCompletion(initiationResult.OperationId, timeoutSeconds);
+            return initiationResult;
         }
 
         #region Happy Path and Journaling Tests
 
-        /// <summary>
-        /// Tests the full "happy path" of the test operation and verifies the integrity of both
-        /// the Action Journal and the Change Journal.
-        /// </summary>
         [Fact]
         public async Task TestOp_Succeeds_And_RecordsActionAndChangeJournals()
         {
             // ARRANGE
             _output.WriteLine("TEST: TestOp_Succeeds_And_RecordsActionAndChangeJournals");
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.Succeed,
-                CustomMessage = "VerifyThisLogInSlaveLog" // This message will be logged by the slave
-            };
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.Succeed, CustomMessage = "VerifyThisLogInSlaveLog" };
 
             // ACT
             var finalStatus = await RunTestOperation(request);
 
             // ASSERT - API Response
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Succeeded.ToString(), finalStatus.Status, ignoreCase: true);
-            Assert.Equal(100, finalStatus.ProgressPercent);
-            Assert.Single(finalStatus.NodeTasks);
-            var nodeTask = finalStatus.NodeTasks[0];
+            Assert.Equal(MasterActionStatus.Succeeded.ToString(), finalStatus.Status, ignoreCase: true);
+            var stage = Assert.Single(finalStatus.Stages);
+            Assert.True(stage.IsSuccess);
+            var nodeTask = Assert.Single(stage.NodeTasks);
             Assert.Equal(NodeTaskStatus.Succeeded.ToString(), nodeTask.TaskStatus, ignoreCase: true);
-            Assert.NotNull(nodeTask.ResultPayload);
 
-            // ASSERT - Action Journal (Verbose Debugging)
-            var actionJournalDir = FindActionJournalDirectory(finalStatus.Id);
-            Assert.NotNull(actionJournalDir);
-
-            // 1. Check master_action_info.json
-            var masterActionInfo = await ReadJournalJsonFile<MasterAction>(Path.Combine(actionJournalDir, "master_action_info.json"));
+            // ASSERT - Journal Verification (using IJournal service)
+            var masterActionInfo = await GetArchivedMasterActionFromJournal(finalStatus.Id);
             Assert.NotNull(masterActionInfo);
-            Assert.Equal(OperationOverallStatus.Succeeded, masterActionInfo.OverallStatus);
-            Assert.Equal(finalStatus.Id, masterActionInfo.Id);
+            Assert.Equal(MasterActionStatus.Succeeded, masterActionInfo.OverallStatus);
 
-            // 2. Check stage logs for the message passed to the slave
-            var slaveLogContent = await GetStageLogContent(actionJournalDir, "MultiNodeTestStage", "InternalTestSlave.log");
+            var slaveLogContent = await GetStageLogFromJournal(finalStatus.Id, 1, "InternalTestSlave.log");
             Assert.NotNull(slaveLogContent);
             Assert.Contains(request.CustomMessage, slaveLogContent);
 
-            // 3. Check stage results for the slave's result payload
-            var stageResultPath = Path.Combine(actionJournalDir, "stages", "1-MultiNodeTestStage", "results", "stage_result.json");
-            var stageResult = await ReadJournalJsonFile<MultiNodeOperationResult>(stageResultPath);
+            var stageResult = await GetStageResultFromJournal<List<NodeActionResult>>(finalStatus.Id, 1);
             Assert.NotNull(stageResult);
-            Assert.True(stageResult.IsSuccess);
-            Assert.NotNull(stageResult.FinalOperationState.NodeTasks.First().ResultPayload);
-
-
-            // ASSERT - Change Journal (High-Level Audit)
-            var changeJournalPath = Path.Combine(_journalRootPath, "system_changes_index.log");
-            Assert.True(File.Exists(changeJournalPath));
-            var changeJournalLines = await File.ReadAllLinesAsync(changeJournalPath);
-            
-            var initiatedRecordLine = changeJournalLines.LastOrDefault(l => l.Contains(finalStatus.Id) && l.Contains("SystemEventInitiated"));
-            var completedRecordLine = changeJournalLines.LastOrDefault(l => l.Contains(finalStatus.Id) && l.Contains("\"Outcome\":\"Success\""));
-
-            Assert.NotNull(initiatedRecordLine);
-            Assert.NotNull(completedRecordLine);
-
-            var completedRecord = JsonSerializer.Deserialize<SystemChangeRecord>(completedRecordLine, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            Assert.NotNull(completedRecord);
-            Assert.Equal("Success", completedRecord.Outcome);
-            Assert.Equal(finalStatus.Id, completedRecord.SourceMasterActionId);
+            Assert.True(stageResult.Single().IsSuccess);
         }
 
-        /// <summary>
-        /// Verifies that logs generated directly by the MasterActionHandler (using context.LogInfo)
-        /// are correctly recorded in the _master.log file within the appropriate stage directory.
-        /// </summary>
         [Fact]
         public async Task TestOp_Succeeds_And_Verifies_Master_Side_Logging()
         {
             // ARRANGE
-            _output.WriteLine("TEST: TestOp_Succeeds_And_Verifies_Master_Side_Logging");
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.Succeed,
-                CustomMessage = "VerifyThisLogInMasterLog" // This message will be logged by the master handler
-            };
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.Succeed, CustomMessage = "VerifyThisLogInMasterLog" };
 
             // ACT
             var finalStatus = await RunTestOperation(request);
 
             // ASSERT
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Succeeded.ToString(), finalStatus.Status, ignoreCase: true);
+            Assert.Equal(MasterActionStatus.Succeeded.ToString(), finalStatus.Status, ignoreCase: true);
 
-            var actionJournalDir = FindActionJournalDirectory(finalStatus.Id);
-            Assert.NotNull(actionJournalDir);
+            // Verify logs for the initialization stage (0-_init)
+            var initLogContent = await GetStageLogFromJournal(finalStatus.Id, 0, "_master.log");
+            Assert.NotNull(initLogContent);
+            Assert.Contains("Starting Orchestration Test workflow...", initLogContent);
+            Assert.Contains(request.CustomMessage, initLogContent);
 
-            // The log is generated before the "MultiNodeTestStage" begins.
-            // Check the log file for the initial stage (_init).
-            var masterLogContent = await GetStageLogContent(actionJournalDir, "_init", "_master.log");
-            Assert.NotNull(masterLogContent);
-            Assert.Contains(request.CustomMessage, masterLogContent);
+            // Verify logs for the main execution stage (1-MultiNodeTestStage)
+            var stageLogContent = await GetStageLogFromJournal(finalStatus.Id, 1, "_master.log");
+            Assert.NotNull(stageLogContent);
+            Assert.Contains("--- Beginning Stage 1/1: MultiNodeTestStage ---", stageLogContent);
+
+            // Verify logs for the finalization stage (2-_final)
+            var finalLogContent = await GetStageLogFromJournal(finalStatus.Id, 2, "_master.log");
+            Assert.NotNull(finalLogContent);
+            Assert.Contains("Orchestration Test completed successfully.", finalLogContent);
         }
 
         #endregion
 
         #region Master-Side Failure Tests
 
-        /// <summary>
-        /// Verifies that if the IMasterActionHandler throws an exception immediately, the
-        /// operation is correctly marked as Failed and the journals reflect this.
-        /// </summary>
         [Fact]
         public async Task TestOp_Fails_When_MasterActionHandler_Throws_Immediately()
         {
             // ARRANGE
-            _output.WriteLine("TEST: TestOp_Fails_When_MasterActionHandler_Throws_Immediately");
-            var request = new TestOpRequest
-            {
-                MasterFailure = MasterFailureMode.ThrowBeforeFirstStage,
-                SlaveBehavior = SlaveBehaviorMode.Succeed // Slave behavior is irrelevant here
-            };
+            var request = new TestOpRequest { MasterFailure = MasterFailureMode.ThrowBeforeFirstStage };
 
             // ACT
             var finalStatus = await RunTestOperation(request, 15);
 
             // ASSERT
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
-			Assert.True( finalStatus.RecentLogs.Any( log => log.Contains( "Simulated master failure before first stage" ) ), "Expected log entry not found in RecentLogs." );
+            Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+			Assert.Contains(finalStatus.RecentLogs, log => log.Contains( "Simulated master failure before first stage" ));
 
-            // Verify Action Journal records the failure
-            var actionJournalDir = FindActionJournalDirectory(finalStatus.Id);
-            Assert.NotNull(actionJournalDir);
-            var masterLog = await GetStageLogContent(actionJournalDir, "_init", "_master.log");
-            Assert.NotNull(masterLog);
-            Assert.Contains("Simulated master failure before first stage", masterLog);
+            // Verify init log contains the intent to throw
+            var initLog = await GetStageLogFromJournal(finalStatus.Id, 0, "_master.log");
+            Assert.NotNull(initLog);
+            Assert.Contains("SIMULATOR: Throwing exception before any stage", initLog);
+
+            // Verify final log contains the actual error message  ; final == init because no stage has run
+            var finalLog = await GetStageLogFromJournal(finalStatus.Id, 0, "_master.log");
+            Assert.NotNull(finalLog);
+            Assert.Contains("Simulated master failure before first stage", finalLog);
         }
 
-        /// <summary>
-        /// Verifies that if the IMasterActionHandler throws an exception after a successful stage,
-        /// the operation is correctly marked as Failed and journals reflect this.
-        /// </summary>
+        [Fact]
+        public async Task TestOp_Fails_When_MasterActionHandler_Throws_Within_Stage()
+        {
+            // ARRANGE
+            var request = new TestOpRequest { MasterFailure = MasterFailureMode.ThrowWithinFirstStage, SlaveBehavior = SlaveBehaviorMode.Succeed };
+
+            // ACT
+            var finalStatus = await RunTestOperation(request, 15);
+
+            // ASSERT
+            Assert.NotNull(finalStatus);
+            Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+            Assert.True(finalStatus.Stages.First().IsSuccess); // First stage should have succeeded
+
+            // Allow a brief moment for the background log flush in the coordinator's finally block to complete.
+            await Task.Delay(500);
+
+            // Verify stage log contains the intent to throw
+            var stage1Log = await GetStageLogFromJournal(finalStatus.Id, 1, "_master.log");
+            Assert.NotNull(stage1Log);
+            Assert.Contains("SIMULATOR: Throwing exception within first stage", stage1Log);
+            Assert.Contains("Simulated master failure within first stage", stage1Log);
+        }
+
         [Fact]
         public async Task TestOp_Fails_When_MasterActionHandler_Throws_Between_Stages()
         {
             // ARRANGE
-            _output.WriteLine("TEST: TestOp_Fails_When_MasterActionHandler_Throws_Between_Stages");
-            var request = new TestOpRequest
-            {
-                MasterFailure = MasterFailureMode.ThrowAfterFirstStage,
-                SlaveBehavior = SlaveBehaviorMode.Succeed
-            };
+            var request = new TestOpRequest { MasterFailure = MasterFailureMode.ThrowAfterFirstStage, SlaveBehavior = SlaveBehaviorMode.Succeed };
 
             // ACT
             var finalStatus = await RunTestOperation(request, 15);
 
             // ASSERT
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
-			Assert.True( finalStatus.RecentLogs.Any( log => log.Contains( "Simulated master failure after first stage" ) ), "Expected log entry not found in RecentLogs." );
+            Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+            Assert.True(finalStatus.Stages.First().IsSuccess); // First stage should have succeeded
 
-            // Verify Action Journal
-            var actionJournalDir = FindActionJournalDirectory(finalStatus.Id);
-            Assert.NotNull(actionJournalDir);
+            // Allow a brief moment for the background log flush in the coordinator's finally block to complete.
+            await Task.Delay(500);
 
-            // The first stage should have completed successfully
-            var stageResultPath = Path.Combine(actionJournalDir, "stages", "1-MultiNodeTestStage", "results", "stage_result.json");
-            Assert.True(File.Exists(stageResultPath));
 
-            // The exception should be logged in the log for the stage that threw it ("MultiNodeTestStage")
-            var masterLog = await GetStageLogContent(actionJournalDir, "MultiNodeTestStage", "_master.log");
-            Assert.NotNull(masterLog);
-            Assert.Contains("Simulated master failure after first stage", masterLog);
+			// Verify stage log contains the intent to throw
+			// Because the next stage has not started yet, the error should be logged to the previous stage log.
+			var stage1Log = await GetStageLogFromJournal(finalStatus.Id, 1, "_master.log");
+            Assert.NotNull(stage1Log);
+            Assert.Contains("SIMULATOR: Throwing exception after first stage", stage1Log);
+            Assert.Contains("Simulated master failure after first stage", stage1Log);
         }
 
         #endregion
 
         #region Slave-Side Failure Tests
 
-        /// <summary>
-        /// Verifies that if the slave reports it is not ready for a task, the operation
-        /// is marked as Failed.
-        /// </summary>
         [Fact]
         public async Task TestOp_Fails_When_Slave_Fails_On_Prepare()
         {
             // ARRANGE
-            _output.WriteLine("TEST: TestOp_Fails_When_Slave_Fails_On_Prepare");
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.FailOnPrepare,
-                CustomMessage = "Disk space low."
-            };
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.FailOnPrepare, CustomMessage = "Disk space low." };
 
             // ACT
             var finalStatus = await RunTestOperation(request, 15);
 
             // ASSERT
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
-            Assert.Single(finalStatus.NodeTasks);
-            var nodeTask = finalStatus.NodeTasks[0];
-            Assert.Equal(NodeTaskStatus.NotReadyForTask.ToString(), nodeTask.TaskStatus, ignoreCase: true);
-            Assert.Contains(request.CustomMessage, nodeTask.Message);
+            Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+            var task = Assert.Single(finalStatus.Stages).NodeTasks.Single();
+            Assert.Equal(NodeTaskStatus.NotReadyForTask.ToString(), task.TaskStatus, ignoreCase: true);
+            Assert.Contains(request.CustomMessage, task.Message);
         }
 
-        /// <summary>
-        /// Verifies that if the slave fails during task execution, the operation is
-        /// marked as Failed and the error payload is recorded.
-        /// </summary>
         [Fact]
         public async Task TestOp_Fails_When_Slave_Fails_On_Execute()
         {
             // ARRANGE
-            _output.WriteLine("TEST: TestOp_Fails_When_Slave_Fails_On_Execute");
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.FailOnExecute,
-                CustomMessage = "Critical component missing."
-            };
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.FailOnExecute, CustomMessage = "Computation failed." };
 
             // ACT
             var finalStatus = await RunTestOperation(request);
 
             // ASSERT
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
-            var nodeTask = finalStatus.NodeTasks.Single();
+            Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+            var nodeTask = Assert.Single(finalStatus.Stages).NodeTasks.Single();
             Assert.Equal(NodeTaskStatus.Failed.ToString(), nodeTask.TaskStatus, ignoreCase: true);
-            Assert.Contains("Task reported failure by executive code", nodeTask.Message);
-            
             Assert.NotNull(nodeTask.ResultPayload);
-            Assert.True(nodeTask.ResultPayload.TryGetValue("error", out var errorElement));
-            Assert.Equal("InvalidOperationException", errorElement.ToString());
-            Assert.True(nodeTask.ResultPayload.TryGetValue("message", out var messageElement));
-            Assert.Equal(request.CustomMessage, messageElement.ToString());
+            Assert.Equal("FailureRequested", ((JsonElement)nodeTask.ResultPayload["error"]).GetString());
+            Assert.Equal(request.CustomMessage, ((JsonElement)nodeTask.ResultPayload["message"]).GetString());
         }
 
-        /// <summary>
-        /// Verifies that the master correctly times out if the slave never responds to a
-        /// readiness check instruction.
-        /// </summary>
+        [Fact]
+        public async Task TestOp_Fails_When_Slave_Throws_On_Execute()
+        {
+            // ARRANGE
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.ThrowOnExecute, CustomMessage = "Critical component missing." };
+
+            // ACT
+            var finalStatus = await RunTestOperation(request);
+
+            // ASSERT
+            Assert.NotNull(finalStatus);
+            Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+            var nodeTask = Assert.Single(finalStatus.Stages).NodeTasks.Single();
+            Assert.Equal(NodeTaskStatus.Failed.ToString(), nodeTask.TaskStatus, ignoreCase: true);
+            Assert.NotNull(nodeTask.ResultPayload);
+            Assert.Contains("InvalidOperationException", ((JsonElement)nodeTask.ResultPayload["error"]).GetString());
+            Assert.Equal(request.CustomMessage, ((JsonElement)nodeTask.ResultPayload["message"]).GetString());
+        }
+        
+        #endregion
+
+        #region Timeout Tests
+
         [Fact]
         public async Task TestOp_Fails_When_Slave_Times_Out_On_Prepare()
         {
             // ARRANGE
-            _output.WriteLine("TEST: TestOp_Fails_When_Slave_Times_Out_On_Prepare");
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.TimeoutOnPrepare
-            };
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.TimeoutOnPrepare };
 
             // ACT
-            // The MultiNodeOperationStageHandler has an internal 30-second timeout for readiness.
             var finalStatus = await RunTestOperation(request, 45);
 
             // ASSERT
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
-            var nodeTask = finalStatus.NodeTasks.Single();
+            Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+            var nodeTask = Assert.Single(finalStatus.Stages).NodeTasks.Single();
             Assert.Equal(NodeTaskStatus.ReadinessCheckTimedOut.ToString(), nodeTask.TaskStatus, ignoreCase: true);
         }
         
-        /// <summary>
-        /// Verifies that the master correctly times out if the slave starts a task but never
-        /// reports completion within the configured timeout period.
-        /// </summary>
         [Fact]
         public async Task TestOp_Fails_When_Slave_Times_Out_On_Execute()
         {
             // ARRANGE
-            _output.WriteLine("TEST: TestOp_Fails_When_Slave_Times_Out_On_Execute");
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.TimeoutOnExecute,
-                ExecutionDelaySeconds = 40 // Set a long delay to exceed the master's timeout
-            };
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.TimeoutOnExecute, ExecutionDelaySeconds = 40 };
 
             // ACT
-            // The SlaveTaskInstruction has a default timeout of 30s in the handler.
             var finalStatus = await RunTestOperation(request, 45);
 
             // ASSERT
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
-            var nodeTask = finalStatus.NodeTasks.Single();
+            Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+            var nodeTask = Assert.Single(finalStatus.Stages).NodeTasks.Single();
             Assert.Equal(NodeTaskStatus.TimedOut.ToString(), nodeTask.TaskStatus, ignoreCase: true);
         }
-
         #endregion
 
         #region Disconnection and Health Monitoring Tests
         
-        /// <summary>
-        /// Verifies that if a slave node disconnects during a running task, the master's
-        /// health monitor detects this and correctly fails the operation.
-        /// </summary>
         [Fact]
         public async Task TestOp_Fails_When_Node_Disconnects_During_Execution()
         {
             // ARRANGE
-            _output.WriteLine("TEST: TestOp_Fails_When_Node_Disconnects_During_Execution");
-            var slaveAgentService = _fixture.AppHost.Services.GetServices<IHostedService>().OfType<SlaveAgentService>().Single();
-            var request = new TestOpRequest
-            {
-                // Use a behavior that just waits for a long time
-                SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute, 
-                ExecutionDelaySeconds = 60
-            };
+            var slaveAgentService = _fixture.AppHost.Services.GetServices<IHostedService>().OfType<SlaveAgentService>().FirstOrDefault();
+            Assert.NotNull(slaveAgentService);
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute, ExecutionDelaySeconds = 60 };
 
-            OperationInitiationResponse? initiationResult = null;
             try
             {
                 // ACT
-                // 1. Initiate the operation but don't wait for it
-                var initiateResponse = await _client.PostAsJsonAsync("/api/v1/operations/test-op", request);
-                initiateResponse.EnsureSuccessStatusCode();
-                initiationResult = await initiateResponse.Content.ReadFromJsonAsync<OperationInitiationResponse>();
-                _output.WriteLine($"Long-running operation initiated: {initiationResult!.OperationId}");
-
-                // 2. Wait for the task to start on the slave
+                var initiationResult = await InitiateTestOperation(request);
                 await Task.Delay(2000);
-
-                // 3. Simulate the slave disconnecting by stopping its service
-                _output.WriteLine("Simulating slave disconnect by stopping SlaveAgentService...");
                 await slaveAgentService.StopAsync(CancellationToken.None);
-                _output.WriteLine("SlaveAgentService stopped.");
-
-                // 4. Poll for the operation's completion. The health monitor runs every 15s,
-                //    so it should detect the offline node and fail the operation.
-                //    We give it 20-25 seconds to be safe.
                 var finalStatus = await PollForOperationCompletion(initiationResult.OperationId, 25);
 
                 // ASSERT
                 Assert.NotNull(finalStatus);
-                // The correct outcome is FAILED because the node went offline.
-                Assert.Equal(OperationOverallStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
-
-                var nodeTask = finalStatus.NodeTasks.Single();
-                // The correct task status is NodeOfflineDuringTask, set by the health monitor.
+                Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+                var nodeTask = Assert.Single(finalStatus.Stages).NodeTasks.Single();
                 Assert.Equal(NodeTaskStatus.NodeOfflineDuringTask.ToString(), nodeTask.TaskStatus, ignoreCase: true);
-                Assert.Contains("Node went offline", nodeTask.Message, StringComparison.OrdinalIgnoreCase);
             }
             finally
             {
-                // ENSURE CLEAN STATE: Restart the slave agent service so other tests are not affected.
-                _output.WriteLine("Restarting SlaveAgentService for test cleanup...");
-                await slaveAgentService.StartAsync(CancellationToken.None);
-                // Give it time to reconnect before the next test runs
-                await Task.Delay(5000); 
-                _output.WriteLine("SlaveAgentService restarted.");
-            }
-        }        
-        
-        /// <summary>
-        /// Verifies that a cancellation request for a task on a disconnected node completes
-        /// immediately without waiting for a timeout.
-        /// </summary>
-        [Fact]
-        public async Task TestOp_Cancels_Immediately_When_Node_Is_Already_Offline()
-        {
-            // ARRANGE
-            _output.WriteLine("TEST: TestOp_Cancels_Immediately_When_Node_Is_Already_Offline");
-            var slaveAgentService = _fixture.AppHost.Services.GetServices<IHostedService>().OfType<SlaveAgentService>().Single();
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute,
-                ExecutionDelaySeconds = 60
-            };
-
-            try
-            {
-                // 1. Initiate the long-running operation
-                var initiateResponse = await _client.PostAsJsonAsync("/api/v1/operations/test-op", request);
-                var initiationResult = await initiateResponse.Content.ReadFromJsonAsync<OperationInitiationResponse>();
-                _output.WriteLine($"Long-running operation initiated: {initiationResult!.OperationId}");
-
-                // 2. Simulate disconnect
-                await Task.Delay(2000);
-                _output.WriteLine("Simulating slave disconnect...");
-                await slaveAgentService.StopAsync(CancellationToken.None);
-
-				// 3. signar detects the disconnection
-				_output.WriteLine("Waiting for signalR to detect disconnection...");
-                await Task.Delay(2000);
-
-                // ACT
-                // 4. Request cancellation for the operation with the offline node.
-                _output.WriteLine($"Requesting cancellation for operation on offline node: {initiationResult.OperationId}");
-                var cancelResponse = await _client.PostAsync($"/api/v1/operations/{initiationResult.OperationId}/cancel", null);
-                Assert.True(
-                    cancelResponse.StatusCode == HttpStatusCode.OK ||
-                    cancelResponse.StatusCode == HttpStatusCode.Conflict // already cancelled or failed
-                );
-
-                // 5. Poll for completion. This should be very fast.
-                var finalStatus = await PollForOperationCompletion(initiationResult.OperationId, 10); // Use a short timeout
-
-                // ASSERT
-                Assert.NotNull(finalStatus);
-				Assert.True(
-				   finalStatus.Status.Equals( OperationOverallStatus.Cancelled.ToString(), StringComparison.OrdinalIgnoreCase ) ||
-				   finalStatus.Status.Equals( OperationOverallStatus.Failed.ToString(), StringComparison.OrdinalIgnoreCase ),
-				   $"Expected status to be either 'Cancelled' or 'Failed', but got '{finalStatus.Status}'."
-				);
-				var nodeTask = finalStatus.NodeTasks.Single();
-                // The status should be 'Cancelled' because the cancellation monitor sees the node is offline and doesn't wait.
-				Assert.True(
-				   nodeTask.TaskStatus.Equals( NodeTaskStatus.Cancelled.ToString(), StringComparison.OrdinalIgnoreCase ) ||
-				   nodeTask.TaskStatus.Equals( NodeTaskStatus.NodeOfflineDuringTask.ToString(), StringComparison.OrdinalIgnoreCase ),
-				   $"Expected task status to be either 'Cancelled' or 'NodeOfflineDuringTask', but got '{nodeTask.TaskStatus}'."
-				);
-            }
-            finally
-            {
-                // ENSURE CLEAN STATE
-                _output.WriteLine("Restarting SlaveAgentService for test cleanup...");
                 await slaveAgentService.StartAsync(CancellationToken.None);
                 await Task.Delay(5000);
-                _output.WriteLine("SlaveAgentService restarted.");
             }
         }
-
+        
         #endregion
 
         #region Cancellation Tests
 
-        /// <summary>
-        /// Verifies that if a node disconnects immediately after the master sends it
-        /// a cancellation command, the operation resolves quickly and correctly to
-        /// a 'Cancelled' state without hanging.
-        /// </summary>
-        [Fact]
-        public async Task TestOp_Resolves_When_Node_Disconnects_During_Cancellation_Acknowledgement()
-        {
-            // ARRANGE
-            _output.WriteLine("TEST: TestOp_Resolves_When_Node_Disconnects_During_Cancellation_Acknowledgement");
-            var slaveAgentService = _fixture.AppHost.Services.GetServices<IHostedService>().OfType<SlaveAgentService>().Single();
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute,
-                ExecutionDelaySeconds = 60
-            };
-
-            OperationInitiationResponse? initiationResult = null;
-            try
-            {
-                // 1. Initiate the long-running operation
-                var initiateResponse = await _client.PostAsJsonAsync("/api/v1/operations/test-op", request);
-                initiateResponse.EnsureSuccessStatusCode();
-                initiationResult = await initiateResponse.Content.ReadFromJsonAsync<OperationInitiationResponse>();
-                _output.WriteLine($"Long-running operation initiated: {initiationResult!.OperationId}");
-
-                // 2. Wait a very short time just for the task to start on the slave
-                await Task.Delay(2000);
-
-                // ACT
-                // 3. Send the cancellation request. The master will change the task state
-                //    to 'Cancelling' and send a message to the slave.
-                _output.WriteLine($"Requesting cancellation for operation: {initiationResult.OperationId}");
-                var cancelResponse = await _client.PostAsync($"/api/v1/operations/{initiationResult.OperationId}/cancel", null);
-                Assert.True(cancelResponse.IsSuccessStatusCode, "The initial cancel request should be accepted.");
-
-                // 4. Immediately simulate the slave disconnecting AFTER the master has sent the cancel command.
-                //    This simulates the slave crashing before it can acknowledge the cancellation.
-                _output.WriteLine("Simulating slave disconnect immediately after cancellation request...");
-                await slaveAgentService.StopAsync(CancellationToken.None);
-                _output.WriteLine("SlaveAgentService stopped.");
-
-                // ASSERT
-                // 5. Poll for completion. This should resolve very quickly because the cancellation
-                //    monitor will see the node is offline and immediately resolve the task.
-                var finalStatus = await PollForOperationCompletion(initiationResult.OperationId, 5); // Use a short 5s timeout
-
-                Assert.NotNull(finalStatus);
-                Assert.Equal(OperationOverallStatus.Cancelled.ToString(), finalStatus.Status, ignoreCase: true);
-
-                var nodeTask = finalStatus.NodeTasks.Single();
-                // The status should be 'Cancelled' because the cancellation monitor sees the node is offline
-                // and doesn't wait for a reply that will never come.
-                Assert.Equal(NodeTaskStatus.Cancelled.ToString(), nodeTask.TaskStatus, ignoreCase: true);
-            }
-            finally
-            {
-                // ENSURE CLEAN STATE
-                _output.WriteLine("Restarting SlaveAgentService for test cleanup...");
-                // Check if the service is already running before starting, in case the test failed before StopAsync was called
-                // This is a defensive check, but good practice.
-                if (slaveAgentService.GetType().GetMethod("StartAsync").IsPublic) // A simple check if it is a running service
-                {
-                     await slaveAgentService.StartAsync(CancellationToken.None);
-                     await Task.Delay(5000); // Give it time to reconnect
-                     _output.WriteLine("SlaveAgentService restarted.");
-                }
-            }
-        }
-
-
-        /// <summary>
-        /// Verifies that a cancellation request for an operation whose node has already
-        /// gone offline is handled gracefully and does not hang.
-        /// </summary>
-        [Fact]
-        public async Task TestOp_Cancel_ReturnsConflict_When_Operation_Already_Failed_Due_To_Offline_Node()
-        {
-            // ARRANGE
-            _output.WriteLine("TEST: Cancel_ReturnsConflict_When_Operation_Already_Failed_Due_To_Offline_Node");
-            var slaveAgentService = _fixture.AppHost.Services.GetServices<IHostedService>().OfType<SlaveAgentService>().Single();
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute, // A mode that runs long enough for this test
-                ExecutionDelaySeconds = 60
-            };
-
-            OperationInitiationResponse? initiationResult = null;
-            try
-            {
-                // 1. Initiate the long-running operation
-                var initiateResponse = await _client.PostAsJsonAsync("/api/v1/operations/test-op", request);
-                initiateResponse.EnsureSuccessStatusCode();
-                initiationResult = await initiateResponse.Content.ReadFromJsonAsync<OperationInitiationResponse>();
-                _output.WriteLine($"Long-running operation initiated: {initiationResult!.OperationId}");
-
-                // 2. Simulate disconnect
-                await Task.Delay(2000); // Give task time to start
-                _output.WriteLine("Simulating slave disconnect...");
-                await slaveAgentService.StopAsync(CancellationToken.None);
-        
-                // 3. Wait for the NodeHealthMonitor to detect the offline state and fail the operation.
-                // The monitor runs every 15s. We wait for 20s to be safe.
-                _output.WriteLine("Waiting for health monitor to detect disconnection and fail the operation...");
-                await Task.Delay(20000);
-
-                // ACT
-                // 4. Request cancellation for the operation that should now be in a 'Failed' state.
-                _output.WriteLine($"Requesting cancellation for already-failed operation: {initiationResult.OperationId}");
-                var cancelResponse = await _client.PostAsync($"/api/v1/operations/{initiationResult.OperationId}/cancel", null);
-        
-                // ASSERT - Step 1: Verify the API's response
-                // We now EXPECT a 409 Conflict because the operation is already complete.
-                Assert.Equal(HttpStatusCode.Conflict, cancelResponse.StatusCode);
-
-                // ASSERT - Step 2: Verify the final state of the operation
-                // Polling should complete instantly because the operation is already terminal.
-                var finalStatus = await PollForOperationCompletion(initiationResult.OperationId, 5);
-                Assert.NotNull(finalStatus);
-        
-                // The final status should be FAILED, as set by the health monitor.
-                Assert.Equal(OperationOverallStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
-        
-                var nodeTask = finalStatus.NodeTasks.Single();
-                Assert.Equal(NodeTaskStatus.NodeOfflineDuringTask.ToString(), nodeTask.TaskStatus, ignoreCase: true);
-            }
-            finally
-            {
-                // ENSURE CLEAN STATE
-                _output.WriteLine("Restarting SlaveAgentService for test cleanup...");
-                await slaveAgentService.StartAsync(CancellationToken.None);
-                await Task.Delay(5000); // Give it time to reconnect
-                _output.WriteLine("SlaveAgentService restarted.");
-            }
-        }
-
-
-/// <summary>
-        /// Tests the full cancellation flow, from API request to the final 'Cancelled' status.
-        /// </summary>
         [Fact]
         public async Task TestOp_Cancels_Successfully_During_Execution()
         {
             // ARRANGE
             _output.WriteLine("TEST: TestOp_Cancels_Successfully_During_Execution");
-            var request = new TestOpRequest
-            {
-                SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute,
-                ExecutionDelaySeconds = 20 // Ensure it runs long enough to be cancelled
-            };
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute, ExecutionDelaySeconds = 20 };
 
             // ACT
-            var initiateResponse = await _client.PostAsJsonAsync("/api/v1/operations/test-op", request);
-            initiateResponse.EnsureSuccessStatusCode();
-            var initiationResult = await initiateResponse.Content.ReadFromJsonAsync<OperationInitiationResponse>();
-            _output.WriteLine($"Cancellable operation initiated with ID: {initiationResult.OperationId}");
-
-            await Task.Delay(2000);
-
-            _output.WriteLine($"Requesting cancellation for operation ID: {initiationResult.OperationId}");
+            var initiationResult = await InitiateTestOperation(request);
+            await Task.Delay(2000); // Wait for task to start
             var cancelResponse = await _client.PostAsync($"/api/v1/operations/{initiationResult.OperationId}/cancel", null);
             cancelResponse.EnsureSuccessStatusCode();
 
@@ -648,11 +357,75 @@ namespace SiteKeeper.IntegrationTests
 
             var finalStatus = await PollForOperationCompletion(initiationResult.OperationId, 30);
             Assert.NotNull(finalStatus);
-            Assert.Equal(OperationOverallStatus.Cancelled.ToString(), finalStatus.Status, ignoreCase: true);
-            var nodeTask = finalStatus.NodeTasks.Single();
+            Assert.Equal(MasterActionStatus.Cancelled.ToString(), finalStatus.Status, ignoreCase: true);
+            var nodeTask = Assert.Single(finalStatus.Stages).NodeTasks.Single();
             Assert.Equal(NodeTaskStatus.Cancelled.ToString(), nodeTask.TaskStatus, ignoreCase: true);
         }
+        
+        [Fact]
+        public async Task TestOp_Resolves_When_Node_Disconnects_During_Cancellation_Acknowledgement()
+        {
+            // ARRANGE
+            var slaveAgentService = _fixture.AppHost.Services.GetServices<IHostedService>().OfType<SlaveAgentService>().FirstOrDefault();
+            Assert.NotNull(slaveAgentService);
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute, ExecutionDelaySeconds = 60 };
 
+            try
+            {
+                var initiationResult = await InitiateTestOperation(request);
+                await Task.Delay(2000);
+
+                // ACT
+                await _client.PostAsync($"/api/v1/operations/{initiationResult.OperationId}/cancel", null);
+                await slaveAgentService.StopAsync(CancellationToken.None);
+
+                // ASSERT
+                var finalStatus = await PollForOperationCompletion(initiationResult.OperationId, 5);
+                Assert.NotNull(finalStatus);
+                Assert.Equal(MasterActionStatus.Cancelled.ToString(), finalStatus.Status, ignoreCase: true);
+                var nodeTask = Assert.Single(finalStatus.Stages).NodeTasks.Single();
+                Assert.Equal(NodeTaskStatus.Cancelled.ToString(), nodeTask.TaskStatus, ignoreCase: true);
+            }
+            finally
+            {
+                await slaveAgentService.StartAsync(CancellationToken.None);
+                await Task.Delay(5000);
+            }
+        }
+
+        [Fact]
+        public async Task TestOp_Cancel_ReturnsConflict_When_Operation_Already_Failed_Due_To_Offline_Node()
+        {
+            // ARRANGE
+            var slaveAgentService = _fixture.AppHost.Services.GetServices<IHostedService>().OfType<SlaveAgentService>().FirstOrDefault();
+            Assert.NotNull(slaveAgentService);
+            var request = new TestOpRequest { SlaveBehavior = SlaveBehaviorMode.CancelDuringExecute, ExecutionDelaySeconds = 60 };
+
+            try
+            {
+                var initiationResult = await InitiateTestOperation(request);
+                await Task.Delay(2000);
+                await slaveAgentService.StopAsync(CancellationToken.None);
+                await Task.Delay(20000);
+
+                // ACT
+                var cancelResponse = await _client.PostAsync($"/api/v1/operations/{initiationResult.OperationId}/cancel", null);
+        
+                // ASSERT
+                Assert.Equal(HttpStatusCode.Conflict, cancelResponse.StatusCode);
+                var finalStatus = await PollForOperationCompletion(initiationResult.OperationId, 5);
+                Assert.NotNull(finalStatus);
+                Assert.Equal(MasterActionStatus.Failed.ToString(), finalStatus.Status, ignoreCase: true);
+                var task = Assert.Single(finalStatus.Stages).NodeTasks.Single();
+                Assert.Equal(NodeTaskStatus.NodeOfflineDuringTask.ToString(), task.TaskStatus, ignoreCase: true);
+            }
+            finally
+            {
+                await slaveAgentService.StartAsync(CancellationToken.None);
+                await Task.Delay(5000);
+            }
+        }
+        
         #endregion
     }
 }

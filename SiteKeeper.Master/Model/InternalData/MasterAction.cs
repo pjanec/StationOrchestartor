@@ -4,6 +4,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace SiteKeeper.Master.Model.InternalData
 {
@@ -55,7 +56,7 @@ namespace SiteKeeper.Master.Model.InternalData
         /// <summary>
         /// The aggregated overall status of the entire Master Action.
         /// </summary>
-        public OperationOverallStatus OverallStatus { get; set; }
+        public MasterActionStatus OverallStatus { get; set; }
 
         /// <summary>
         /// The calculated overall progress of the Master Action, as a percentage (0-100).
@@ -69,11 +70,27 @@ namespace SiteKeeper.Master.Model.InternalData
         public object? FinalResultPayload { get; set; }
 
         /// <summary>
-        /// A reference to the internal 'Operation' object of the currently running multi-node stage.
-        /// This is used to provide real-time node task details to the UI.
+        /// A thread-safe collection of internal action objects for the currently running multi-node stage(s).
+        /// This is a transient, in-memory property and should NOT be serialized to the final journal.
+        /// It replaces the previous single 'CurrentStageNodeAction' to support parallel execution.
         /// </summary>
-        public Operation? CurrentStageOperation { get; set; }
+        [JsonIgnore]
+        public ConcurrentBag<NodeAction> CurrentStageNodeActions { get; set; } = new();
         
+        /// <summary>
+        /// A transient property holding the name of the stage that is currently executing.
+        /// This is used for real-time UI reporting and is not persisted in the final journal.
+        /// </summary>
+        [JsonIgnore]
+        public string? CurrentStageName { get; set; }
+
+        /// <summary>
+        /// A transient property holding the index of the stage that is currently executing.
+        /// This is used for real-time UI reporting and is not persisted in the final journal.
+        /// </summary>
+        [JsonIgnore]
+        public int CurrentStageIndex { get; set; }
+
         /// <summary>
         /// A list to store the most recent log messages for this action.
         /// This is public for serialization but should only be accessed via thread-safe methods.
@@ -90,7 +107,7 @@ namespace SiteKeeper.Master.Model.InternalData
             Name = name;
             InitiatedBy = initiatedBy;
             StartTime = DateTime.UtcNow;
-            OverallStatus = OperationOverallStatus.PendingInitiation;
+            OverallStatus = MasterActionStatus.Initiated;
             Parameters = parameters;
             RecentLogs = new List<string>();
         }
@@ -100,6 +117,12 @@ namespace SiteKeeper.Master.Model.InternalData
         /// This relies on an extension method for the OperationOverallStatus enum.
         /// </summary>
         public bool IsComplete => OverallStatus.IsCompleted();
+
+        /// <summary>
+        /// A persistent, historical log of every stage that was executed as part of this workflow.
+        /// This property IS serialized to the journal to provide a complete post-execution record.
+        /// </summary>
+        public List<StageRecord> ExecutionHistory { get; set; } = new List<StageRecord>();
 
         /// <summary>
         /// Adds a log message to the RecentLogs list in a thread-safe manner.

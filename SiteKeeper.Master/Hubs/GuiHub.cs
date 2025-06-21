@@ -14,12 +14,12 @@ namespace SiteKeeper.Master.Hubs
     {
         private readonly ILogger<GuiHub> _logger;
         // private readonly IEnvironmentQueryService _environmentQueryService; // Example: For RequestFullEnvironmentStatus
-        private readonly IGuiNotifierService _guiNotifierService; // To send the test response
+        private readonly IGuiNotifier _guiNotifierService; // To send the test response
 
         public GuiHub(
             ILogger<GuiHub> logger,
             // IEnvironmentQueryService environmentQueryService,
-            IGuiNotifierService guiNotifierService
+            IGuiNotifier guiNotifierService
             )
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -78,7 +78,7 @@ namespace SiteKeeper.Master.Hubs
             _logger.LogInformation("RequestFullEnvironmentStatus received from ConnectionId={ConnectionId}, UserId={UserId}", Context.ConnectionId, userId);
 
             // TODO: Implement the logic to gather all necessary environment status information.
-            // This would involve calling various services (e.g., OperationCoordinatorService, NodeHealthMonitorService,
+            // This would involve calling various services (e.g., MasterActionCoordinatorService, NodeHealthMonitorService,
             // potentially a dedicated EnvironmentSummaryService) and then sending multiple specific update messages
             // to the Clients.Caller (e.g., using IGuiHub methods like ReceiveNodeStatusUpdate, ReceiveOperationCompleted etc.).
             // For example:

@@ -8,9 +8,6 @@ namespace SiteKeeper.Shared.Enums
     /// <remarks>
     /// This enum tracks the detailed lifecycle of a task on a slave, from the master's perspective,
     /// covering readiness checks, dispatch, execution, and various terminal states (success, failure, cancellation, errors).
-    /// It is primarily used internally by the <c>OperationCoordinatorService</c> and for journaling the state of each <c>NodeTask</c>
-    /// within an <c>Operation</c>.
-    /// See "SiteKeeper - Master - Data Structures.md" and "SiteKeeper Master Slave - guidelines.md" for its role in operations.
     /// Slave agents also report their progress using statuses that map to these values (e.g., via <c>SlaveTaskProgressUpdate</c> DTOs).
     /// Serialization to string is handled by <see cref="JsonStringEnumConverter"/>.
     /// </remarks>

@@ -7,18 +7,18 @@ namespace SiteKeeper.Shared.DTOs.AgentHub
     /// </summary>
     /// <remarks>
     /// This message is sent from the Master's AgentHub to a specific Slave Agent.
-    /// It specifies the operation and task ID that needs to be cancelled.
+    /// It specifies the action and task ID that needs to be cancelled.
     /// An optional reason for cancellation can be provided.
     /// Corresponds to the `CancelTaskOnAgentRequest` schema in `web api swagger.yaml`.
     /// </remarks>
     public class CancelTaskOnAgentRequest
     {
         /// <summary>
-        /// The unique identifier of the overall operation the task belongs to.
+        /// The unique identifier of the overall action the task belongs to.
         /// </summary>
         /// <example>"op-deploy-webapp-123"</example>
         [Required]
-        public string OperationId { get; set; } = string.Empty;
+        public string ActionId { get; set; } = string.Empty;
 
         /// <summary>
         /// The unique identifier of the task to be cancelled.
@@ -30,7 +30,7 @@ namespace SiteKeeper.Shared.DTOs.AgentHub
         /// <summary>
         /// Optional. A brief reason explaining why the task cancellation is requested.
         /// </summary>
-        /// <example>"Operation aborted by user."</example>
+        /// <example>"aborted by user."</example>
         public string? Reason { get; set; }
     }
 } 

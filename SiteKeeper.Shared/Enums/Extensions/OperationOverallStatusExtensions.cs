@@ -3,7 +3,7 @@ using SiteKeeper.Shared.Enums;
 namespace SiteKeeper.Shared.Enums.Extensions
 {
     /// <summary>
-    /// Provides extension methods for the <see cref="OperationOverallStatus"/> enum.
+    /// Provides extension methods for the <see cref="NodeActionOverallStatus"/> enum.
     /// </summary>
     public static class OperationOverallStatusExtensions
     {
@@ -12,12 +12,12 @@ namespace SiteKeeper.Shared.Enums.Extensions
         /// </summary>
         /// <param name="status">The operation overall status.</param>
         /// <returns><c>true</c> if the status is Succeeded, SucceededWithErrors, Failed, or Cancelled; otherwise, <c>false</c>.</returns>
-        public static bool IsCompleted(this OperationOverallStatus status)
+        public static bool IsCompleted(this NodeActionOverallStatus status)
         {
-            return status == OperationOverallStatus.Succeeded ||
-                   status == OperationOverallStatus.SucceededWithErrors ||
-                   status == OperationOverallStatus.Failed ||
-                   status == OperationOverallStatus.Cancelled;
+            return status == NodeActionOverallStatus.Succeeded ||
+                   status == NodeActionOverallStatus.SucceededWithErrors ||
+                   status == NodeActionOverallStatus.Failed ||
+                   status == NodeActionOverallStatus.Cancelled;
         }
     }
 } 
